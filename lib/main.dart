@@ -77,42 +77,42 @@ class NewsArticle {
   }
 }
 
-// ========== SERVIÇO DE BUSCA DE NOTÍCIAS REAL ==========
+// ========== SERVIÇO DE BUSCA DE NOTÍCIAS CORRIGIDO ==========
 class NewsSearchService {
   static final List<Map<String, dynamic>> _newsSources = [
-    {
-      'name': 'G1 Distrito Federal',
-      'domain': 'g1.globo.com',
-      'rss': 'https://g1.globo.com/rss/g1/distrito-federal/',
-      'type': NewsType.portal,
-      'weight': 10
-    },
-    {
-      'name': 'Correio Braziliense',
-      'domain': 'correiobraziliense.com.br',
-      'rss': 'https://www.correiobraziliense.com.br/rss/ultimas-noticias',
-      'type': NewsType.jornal,
-      'weight': 9
-    },
-    {
-      'name': 'Metrópoles DF',
-      'domain': 'metropoles.com',
-      'rss': 'https://www.metropoles.com/df/rss',
-      'type': NewsType.portal,
-      'weight': 8
-    },
     {
       'name': 'Agência Brasil',
       'domain': 'agenciabrasil.ebc.com.br',
       'rss': 'https://agenciabrasil.ebc.com.br/rss/ultimasnoticias/feed.xml',
       'type': NewsType.agencia,
-      'weight': 7
+      'weight': 10
     },
     {
       'name': 'Jornal de Brasília',
       'domain': 'jornaldebrasilia.com.br',
       'rss': 'https://www.jornaldebrasilia.com.br/feed/',
       'type': NewsType.jornal,
+      'weight': 9
+    },
+    {
+      'name': 'G1 Distrito Federal',
+      'domain': 'g1.globo.com',
+      'rss': 'https://g1.globo.com/rss/g1/distrito-federal/',
+      'type': NewsType.portal,
+      'weight': 8
+    },
+    {
+      'name': 'Correio Braziliense',
+      'domain': 'correiobraziliense.com.br',
+      'rss': 'https://www.correiobraziliense.com.br/rss/ultimas-noticias',
+      'type': NewsType.jornal,
+      'weight': 7
+    },
+    {
+      'name': 'Metrópoles DF',
+      'domain': 'metropoles.com',
+      'rss': 'https://www.metropoles.com/df/rss',
+      'type': NewsType.portal,
       'weight': 6
     },
     {
@@ -122,24 +122,34 @@ class NewsSearchService {
       'type': NewsType.portal,
       'weight': 5
     },
+    {
+      'name': 'R7 Distrito Federal',
+      'domain': 'r7.com',
+      'rss': 'https://r7.com/rss/editorias/distrito-federal',
+      'type': NewsType.portal,
+      'weight': 4
+    },
+    {
+      'name': 'UOL Notícias DF',
+      'domain': 'uol.com.br',
+      'rss': 'https://rss.uol.com.br/feed/noticias.xml',
+      'type': NewsType.portal,
+      'weight': 3
+    },
   ];
 
   static final List<String> _pcdfKeywords = [
-    'pcdf', 'polícia civil', 'polícia civil df', 'polícia civil distrito federal'
-
+    'pcdf', 'polícia civil', 'polícia civil df', 'polícia civil distrito federal',
+    'delegacia', 'delegado', 'investigação', 'inquérito', 'prisão', 'prisao',
+    'operacao', 'operação', 'apreensão', 'apreensao', 'flagrante', 'mandado',
+    'crime', 'criminal', 'segurança pública', 'seguranca publica', 'df'
   ];
 
   static Future<List<NewsArticle>> searchRealNews({int count = 50, DateTime? startDate, DateTime? endDate}) async {
     final results = <NewsArticle>[];
-    final now = DateTime.now();
 
     try {
       print('Iniciando busca de notícias em ${_newsSources.length} fontes...');
-
-      // Buscar notícias do Google News RSS
-      final googleNews = await _fetchGoogleNews();
-      results.addAll(googleNews);
-      print('Google News: ${googleNews.length} notícias');
 
       // Buscar de todas as fontes RSS em paralelo
       final List<Future<List<NewsArticle>>> rssFutures = [];
@@ -152,6 +162,9 @@ class NewsSearchService {
           startDate: startDate,
           endDate: endDate,
         ));
+
+        // Pequeno delay para evitar sobrecarga
+        await Future.delayed(const Duration(milliseconds: 100));
       }
 
       final rssResults = await Future.wait(rssFutures);
@@ -159,10 +172,12 @@ class NewsSearchService {
         results.addAll(sourceNews);
       }
 
-      // Buscar notícias via scraping
-      final scrapedNews = await scrapeNewsWebsites();
-      results.addAll(scrapedNews);
-      print('Scraping: ${scrapedNews.length} notícias');
+      print('Total de notícias brutas: ${results.length}');
+
+      // Buscar notícias do Google News separadamente
+      final googleNews = await _fetchGoogleNews(startDate: startDate, endDate: endDate);
+      results.addAll(googleNews);
+      print('Com Google News: ${results.length} notícias');
 
       // Remover duplicatas baseadas no título e URL
       final uniqueResults = _removeDuplicates(results);
@@ -176,13 +191,16 @@ class NewsSearchService {
 
       print('Após filtro PCDF: ${filteredResults.length} notícias');
 
-      // Se ainda tiver poucas notícias, relaxar o filtro
+      // Se tiver poucas notícias, buscar notícias de segurança pública em geral
       List<NewsArticle> finalResults;
       if (filteredResults.length < 10) {
-        finalResults = uniqueResults.take(count).toList();
-        print('Filtro relaxado: ${finalResults.length} notícias');
+        print('Poucas notícias PCDF encontradas. Buscando notícias de segurança geral...');
+        final securityNews = await _fetchSecurityNews(startDate: startDate, endDate: endDate);
+        finalResults = [...filteredResults, ...securityNews];
+        finalResults = _removeDuplicates(finalResults);
+        print('Com notícias de segurança: ${finalResults.length} notícias');
       } else {
-        finalResults = filteredResults.take(count).toList();
+        finalResults = filteredResults;
       }
 
       // Ordenar por data e relevância
@@ -192,13 +210,146 @@ class NewsSearchService {
         return b.relevanceScore.compareTo(a.relevanceScore);
       });
 
-      return finalResults;
+      // Limitar ao número solicitado
+      return finalResults.take(count).toList();
 
     } catch (e) {
       print('Erro na busca de notícias: $e');
-      // Fallback para notícias mock em caso de erro
-      return _generateMockNews(count: count, startDate: startDate, endDate: endDate);
+      // Em caso de erro, retornar notícias de exemplo
+      return _getFallbackNews();
     }
+  }
+
+  static Future<List<NewsArticle>> _fetchGoogleNews({DateTime? startDate, DateTime? endDate}) async {
+    final results = <NewsArticle>[];
+    try {
+      // URL do Google News RSS para busca de notícias sobre PCDF e segurança no DF
+      final queries = [
+        'pcdf+distrito+federal',
+        'polícia+civil+df',
+        'segurança+pública+brasília',
+        'crime+df',
+        'delegacia+distrito+federal'
+      ];
+
+      for (var query in queries) {
+        final encodedQuery = Uri.encodeQueryComponent(query);
+        final rssUrl = 'https://news.google.com/rss/search?q=$encodedQuery&hl=pt-BR&gl=BR&ceid=BR:pt-419';
+
+        print('Buscando Google News: $query');
+
+        final response = await http.get(
+          Uri.parse(rssUrl),
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'application/rss+xml, text/xml, */*',
+          },
+        );
+
+        if (response.statusCode == 200) {
+          final document = xml.XmlDocument.parse(response.body);
+          final items = document.findAllElements('item').take(10);
+
+          for (var item in items) {
+            try {
+              final titleElement = item.findElements('title').firstOrNull;
+              final linkElement = item.findElements('link').firstOrNull;
+              final pubDateElement = item.findElements('pubDate').firstOrNull;
+              final descriptionElement = item.findElements('description').firstOrNull;
+
+              if (titleElement == null || linkElement == null) continue;
+
+              final title = titleElement.text;
+              final link = linkElement.text;
+              final pubDate = pubDateElement?.text ?? DateTime.now().toString();
+              final description = descriptionElement?.text ?? '';
+
+              final articleDate = _parseDate(pubDate);
+
+              // Filtrar por data se especificado
+              if (startDate != null && articleDate.isBefore(startDate)) continue;
+              if (endDate != null && articleDate.isAfter(endDate)) continue;
+
+              final cleanTitle = _cleanHtml(title);
+              final cleanContent = _cleanHtml(description);
+
+              final relevanceScore = _calculateRelevance(cleanTitle + cleanContent);
+
+              final article = NewsArticle(
+                id: 'googlenews_${link.hashCode}',
+                title: cleanTitle,
+                source: 'Google News',
+                url: link,
+                content: cleanContent,
+                date: articleDate,
+                category: NewsCategory.pcdf,
+                relevanceScore: relevanceScore,
+                engagement: 1500,
+                type: NewsType.portal,
+                preview: _extractPreview(cleanContent),
+              );
+
+              results.add(article);
+            } catch (e) {
+              print('Erro ao parsear item do Google News: $e');
+            }
+          }
+        } else {
+          print('Erro HTTP ${response.statusCode} para Google News - Query: $query');
+        }
+
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+    } catch (e) {
+      print('Erro ao buscar Google News: $e');
+    }
+
+    print('Google News retornou: ${results.length} notícias');
+    return results;
+  }
+
+  static Future<List<NewsArticle>> _fetchSecurityNews({DateTime? startDate, DateTime? endDate}) async {
+    final results = <NewsArticle>[];
+    final securitySources = [
+      {
+        'name': 'CNN Brasil Segurança',
+        'rss': 'https://www.cnnbrasil.com.br/seguridad/rss/',
+        'type': NewsType.portal,
+      },
+      {
+        'name': 'Terra Segurança',
+        'rss': 'https://www.terra.com.br/rss/seguranca/',
+        'type': NewsType.portal,
+      },
+    ];
+
+    try {
+      for (var source in securitySources) {
+        final sourceResults = await _fetchRSSFeed(
+          source['rss'] as String,
+          source['name'] as String,
+          source['type'] as NewsType,
+          startDate: startDate,
+          endDate: endDate,
+        );
+
+        // Filtrar por termos de segurança
+        final filtered = sourceResults.where((article) {
+          final text = '${article.title} ${article.content}'.toLowerCase();
+          return text.contains('segurança') ||
+              text.contains('polícia') ||
+              text.contains('crime') ||
+              text.contains('df') ||
+              text.contains('distrito federal');
+        }).toList();
+
+        results.addAll(filtered);
+      }
+    } catch (e) {
+      print('Erro ao buscar notícias de segurança: $e');
+    }
+
+    return results;
   }
 
   static List<NewsArticle> _removeDuplicates(List<NewsArticle> articles) {
@@ -220,61 +371,6 @@ class NewsSearchService {
     return uniqueArticles;
   }
 
-  static Future<List<NewsArticle>> _fetchGoogleNews() async {
-    final results = <NewsArticle>[];
-    try {
-      final queries = [
-        'PCDF+Polícia+Civil+Distrito+Federal',
-        'segurança+pública+DF',
-        'polícia+civil+brasília',
-        'crime+distrito+federal',
-        'operacao+policial+df'
-      ];
-
-      for (var query in queries) {
-        final response = await http.get(Uri.parse(
-            'https://news.google.com/rss/search?q=$query&hl=pt-BR&gl=BR&ceid=BR:pt-419'
-        ));
-
-        if (response.statusCode == 200) {
-          final document = xml.XmlDocument.parse(response.body);
-          final items = document.findAllElements('item').take(15);
-
-          for (var item in items) {
-            try {
-              final title = item.findElements('title').first.text;
-              final link = item.findElements('link').first.text;
-              final pubDate = item.findElements('pubDate').first.text;
-              final description = item.findElements('description').first.text;
-
-              final article = NewsArticle(
-                id: 'google_${link.hashCode}',
-                title: _cleanHtml(title),
-                source: 'Google News',
-                url: link,
-                content: _cleanHtml(description),
-                date: _parseDate(pubDate),
-                category: NewsCategory.pcdf,
-                relevanceScore: _calculateRelevance(title + description),
-                engagement: 1000,
-                type: NewsType.portal,
-                preview: _extractPreview(description),
-              );
-
-              results.add(article);
-            } catch (e) {
-              print('Erro ao parsear item do Google News: $e');
-            }
-          }
-        }
-        await Future.delayed(const Duration(milliseconds: 500)); // Delay entre requests
-      }
-    } catch (e) {
-      print('Erro ao buscar Google News: $e');
-    }
-    return results;
-  }
-
   static Future<List<NewsArticle>> _fetchRSSFeed(
       String url,
       String source,
@@ -284,7 +380,14 @@ class NewsSearchService {
       }) async {
     final results = <NewsArticle>[];
     try {
-      final response = await http.get(Uri.parse(url));
+      final response = await http.get(
+        Uri.parse(url),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/rss+xml, text/xml, */*',
+        },
+      );
+
       print('Buscando RSS: $source - Status: ${response.statusCode}');
 
       if (response.statusCode == 200) {
@@ -293,11 +396,19 @@ class NewsSearchService {
 
         for (var item in items) {
           try {
-            final title = item.findElements('title').first.text;
-            final link = item.findElements('link').first.text;
-            final pubDate = item.findElements('pubDate').first.text;
-            final description = item.findElements('description').first.text;
-            final content = item.findElements('content:encoded').firstOrNull?.text ?? description;
+            final titleElement = item.findElements('title').firstOrNull;
+            final linkElement = item.findElements('link').firstOrNull;
+            final pubDateElement = item.findElements('pubDate').firstOrNull;
+            final descriptionElement = item.findElements('description').firstOrNull;
+            final contentElement = item.findElements('content:encoded').firstOrNull;
+
+            if (titleElement == null || linkElement == null) continue;
+
+            final title = titleElement.text;
+            final link = linkElement.text;
+            final pubDate = pubDateElement?.text ?? DateTime.now().toString();
+            final description = descriptionElement?.text ?? '';
+            final content = contentElement?.text ?? description;
 
             final articleDate = _parseDate(pubDate);
 
@@ -305,18 +416,23 @@ class NewsSearchService {
             if (startDate != null && articleDate.isBefore(startDate)) continue;
             if (endDate != null && articleDate.isAfter(endDate)) continue;
 
+            final cleanTitle = _cleanHtml(title);
+            final cleanContent = _cleanHtml(content.isNotEmpty ? content : description);
+
+            final relevanceScore = _calculateRelevance(cleanTitle + cleanContent);
+
             final article = NewsArticle(
               id: '${source}_${link.hashCode}',
-              title: _cleanHtml(title),
+              title: cleanTitle,
               source: source,
               url: link,
-              content: _cleanHtml(content.isNotEmpty ? content : description),
+              content: cleanContent,
               date: articleDate,
               category: NewsCategory.pcdf,
-              relevanceScore: _calculateRelevance(title + description),
-              engagement: 800,
+              relevanceScore: relevanceScore,
+              engagement: _calculateEngagement(source),
               type: type,
-              preview: _extractPreview(description),
+              preview: _extractPreview(cleanContent),
             );
 
             results.add(article);
@@ -324,6 +440,9 @@ class NewsSearchService {
             print('Erro ao parsear item do RSS $source: $e');
           }
         }
+        print('$source: ${results.length} notícias processadas');
+      } else {
+        print('Erro HTTP ${response.statusCode} para $source - URL: $url');
       }
     } catch (e) {
       print('Erro ao buscar RSS $source: $e');
@@ -331,160 +450,49 @@ class NewsSearchService {
     return results;
   }
 
-  static Future<List<NewsArticle>> scrapeNewsWebsites() async {
-    final results = <NewsArticle>[];
-
-    final websites = [
-      {
-        'name': 'PCDF Oficial',
-        'url': 'https://www.pcdf.df.gov.br/noticias',
-        'type': NewsType.portal,
-        'selectors': {
-          'container': '.item',
-          'title': 'h2',
-          'link': 'a',
-          'date': '.date',
-        }
-      },
-      {
-        'name': 'SSP-DF',
-        'url': 'https://www.ssp.df.gov.br/category/noticias/',
-        'type': NewsType.portal,
-        'selectors': {
-          'container': '.post',
-          'title': 'h2',
-          'link': 'a',
-          'date': '.post-date',
-        }
-      },
-    ];
-
-    for (var site in websites) {
-      try {
-        final response = await http.get(Uri.parse(site['url'] as String));
-        if (response.statusCode == 200) {
-          final scrapedNews = await _scrapeWebsiteContent(
-            response.body,
-            site['name'] as String,
-            site['type'] as NewsType,
-            site['selectors'] as Map<String, String>,
-          );
-          results.addAll(scrapedNews);
-        }
-      } catch (e) {
-        print('Erro no scraping de ${site['name']}: $e');
-      }
-    }
-
-    return results;
-  }
-
-  static Future<List<NewsArticle>> _scrapeWebsiteContent(
-      String html,
-      String source,
-      NewsType type,
-      Map<String, String> selectors,
-      ) async {
-    final results = <NewsArticle>[];
-    try {
-      final document = html_parser.parse(html);
-      final containerSelector = selectors['container'] ?? '.news, .noticia, article';
-      final titleSelector = selectors['title'] ?? 'h1, h2, h3';
-      final linkSelector = selectors['link'] ?? 'a';
-      final dateSelector = selectors['date'] ?? '.date, .time, time';
-
-      final newsElements = document.querySelectorAll(containerSelector);
-
-      for (var element in newsElements.take(10)) {
-        try {
-          final titleElement = element.querySelector(titleSelector);
-          if (titleElement == null) continue;
-
-          final title = titleElement.text.trim();
-          if (title.length < 10 || !_isRelevantToPCDF(title)) continue;
-
-          final linkElement = element.querySelector(linkSelector);
-          var link = linkElement?.attributes['href'] ?? '';
-          if (link.isNotEmpty && !link.startsWith('http')) {
-            link = 'https://${_getDomainFromSource(source)}$link';
-          }
-
-          final dateElement = element.querySelector(dateSelector);
-          var articleDate = DateTime.now();
-          if (dateElement != null) {
-            articleDate = _parseDate(dateElement.text);
-          }
-
-          final article = NewsArticle(
-            id: '${source}_${title.hashCode}',
-            title: title,
-            source: source,
-            url: link.isNotEmpty ? link : 'https://${_getDomainFromSource(source)}',
-            content: title,
-            date: articleDate,
-            category: NewsCategory.pcdf,
-            relevanceScore: _calculateRelevance(title),
-            engagement: 500,
-            type: type,
-            preview: title.length > 100 ? title.substring(0, 100) + '...' : title,
-          );
-
-          results.add(article);
-        } catch (e) {
-          print('Erro ao parsear elemento do scraping: $e');
-        }
-      }
-    } catch (e) {
-      print('Erro no parsing HTML: $e');
-    }
-    return results;
-  }
-
-  // ========== MÉTODOS AUXILIARES ==========
+  // ========== MÉTODOS AUXILIARES CORRIGIDOS ==========
   static String _cleanHtml(String text) {
     return text
         .replaceAll(RegExp(r'<[^>]*>'), '')
-        .replaceAll(RegExp(r'&[^;]+;'), ' ')
+        .replaceAll(RegExp(r'&nbsp;'), ' ')
+        .replaceAll(RegExp(r'&amp;'), '&')
+        .replaceAll(RegExp(r'&lt;'), '<')
+        .replaceAll(RegExp(r'&gt;'), '>')
+        .replaceAll(RegExp(r'&quot;'), '"')
+        .replaceAll(RegExp(r'&#[0-9]+;'), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
   }
 
   static DateTime _parseDate(String dateString) {
     try {
-      // Remove timezone names comuns
-      String normalizedDate = dateString
-          .replaceAll(RegExp(r'[A-Z]{3,4}[\+\-]\d{4}'), '')
-          .replaceAll(RegExp(r'[A-Z]{3,4}'), '')
-          .trim();
-
+      // Tentar formatos comuns de RSS
       final formats = [
+        DateFormat('EEE, dd MMM yyyy HH:mm:ss Z', 'en'),
         DateFormat('EEE, dd MMM yyyy HH:mm:ss', 'en'),
-        DateFormat('EEE, dd MMM yyyy HH:mm', 'en'),
         DateFormat('yyyy-MM-ddTHH:mm:ssZ'),
         DateFormat('yyyy-MM-dd HH:mm:ss'),
         DateFormat('dd/MM/yyyy HH:mm:ss'),
-        DateFormat('dd/MM/yyyy HH:mm'),
-        DateFormat('dd/MM/yyyy'),
-        DateFormat('yyyy-MM-dd'),
+        DateFormat('dd MMM yyyy HH:mm:ss', 'en'),
       ];
 
       for (var format in formats) {
         try {
-          return format.parse(normalizedDate);
+          return format.parse(dateString);
         } catch (e) {
           continue;
         }
       }
 
-      // Tentar parsear datas em português
+      // Tentar formatos em português
       final ptFormats = [
-        DateFormat('EEE, dd MMM yyyy HH:mm:ss', 'pt_BR'),
+        DateFormat('EEE, dd MMM yyyy HH:mm:ss Z', 'pt_BR'),
         DateFormat('dd/MM/yyyy HH:mm:ss', 'pt_BR'),
       ];
 
       for (var format in ptFormats) {
         try {
-          return format.parse(normalizedDate);
+          return format.parse(dateString);
         } catch (e) {
           continue;
         }
@@ -497,19 +505,15 @@ class NewsSearchService {
     }
   }
 
-  static bool _isRelevantToPCDF(String text) {
-    final lowerText = text.toLowerCase();
-    return _pcdfKeywords.any((keyword) => lowerText.contains(keyword.toLowerCase()));
-  }
-
   static int _calculateRelevance(String text) {
     final lowerText = text.toLowerCase();
-    var score = 3; // Score base mais baixo
+    var score = 3;
 
     // Palavras-chave de alta relevância
     if (lowerText.contains('pcdf')) score += 4;
     if (lowerText.contains('polícia civil')) score += 4;
     if (lowerText.contains('distrito federal')) score += 2;
+    if (lowerText.contains('df')) score += 1;
 
     // Palavras-chave de média relevância
     if (lowerText.contains('delegacia')) score += 2;
@@ -526,6 +530,23 @@ class NewsSearchService {
     return score.clamp(1, 10);
   }
 
+  static int _calculateEngagement(String source) {
+    final baseEngagement = {
+      'G1 Distrito Federal': 5000,
+      'Correio Braziliense': 4000,
+      'Metrópoles DF': 3000,
+      'Agência Brasil': 2000,
+      'Jornal de Brasília': 1500,
+      'Brasil 61': 1000,
+      'R7 Distrito Federal': 1200,
+      'UOL Notícias DF': 1800,
+      'Google News': 1500,
+      'CNN Brasil Segurança': 2000,
+      'Terra Segurança': 1200,
+    };
+    return baseEngagement[source] ?? 500;
+  }
+
   static String _extractPreview(String description) {
     final cleanDesc = _cleanHtml(description);
     return cleanDesc.length > 120
@@ -533,127 +554,27 @@ class NewsSearchService {
         : cleanDesc;
   }
 
-  static String _getDomainFromSource(String source) {
-    final domains = {
-      'G1 Distrito Federal': 'g1.globo.com',
-      'Correio Braziliense': 'correiobraziliense.com.br',
-      'Metrópoles DF': 'metropoles.com',
-      'Agência Brasil': 'agenciabrasil.ebc.com.br',
-      'Jornal de Brasília': 'jornaldebrasilia.com.br',
-      'Brasil 61': 'brasil61.com',
-      'PCDF Oficial': 'pcdf.df.gov.br',
-      'SSP-DF': 'ssp.df.gov.br',
-    };
-    return domains[source] ?? source.toLowerCase().replaceAll(' ', '');
-  }
-
-  // ========== FALLBACK PARA DADOS MOCK ==========
-  static List<NewsArticle> _generateMockNews({int count = 10, DateTime? startDate, DateTime? endDate}) {
-    final results = <NewsArticle>[];
-    final now = DateTime.now();
-
-    final newsTemplates = [
-      {
-        'title': 'PCDF prende quadrilha especializada em crimes cibernéticos no DF',
-        'source': 'G1 Distrito Federal',
-        'type': NewsType.portal,
-        'baseScore': 9,
-      },
-      {
-        'title': 'Operação da PCDF apreende 500kg de drogas no Paranoá',
-        'source': 'Correio Braziliense',
-        'type': NewsType.jornal,
-        'baseScore': 10,
-      },
-      {
-        'title': 'Delegacia da PCDF desarticula esquema de contrabando em Brasília',
-        'source': 'Metrópoles DF',
-        'type': NewsType.portal,
-        'baseScore': 8,
-      },
-      {
-        'title': 'PCDF investiga rede de lavagem de dinheiro no Distrito Federal',
-        'source': 'Agência Brasil',
-        'type': NewsType.agencia,
-        'baseScore': 7,
-      },
-      {
-        'title': 'Polícia Civil prende suspeitos de tráfico de armas no DF',
-        'source': 'Jornal de Brasília',
-        'type': NewsType.jornal,
-        'baseScore': 8,
-      },
-      {
-        'title': 'SSP-DF anuncia novas medidas de segurança para o Distrito Federal',
-        'source': 'SSP-DF',
-        'type': NewsType.portal,
-        'baseScore': 6,
-      },
-      {
-        'title': 'PCDF realiza operação contra milícia em regiões administrativas',
-        'source': 'Brasil 61',
-        'type': NewsType.portal,
-        'baseScore': 9,
-      },
-      {
-        'title': 'Delegado da PCDF fala sobre avanços nas investigações de homicídios',
-        'source': 'PCDF Oficial',
-        'type': NewsType.portal,
-        'baseScore': 7,
-      },
-    ];
-
-    for (int i = 0; i < count; i++) {
-      final template = newsTemplates[i % newsTemplates.length];
-      final daysAgo = i % 14; // Notícias dos últimos 14 dias
-      final articleDate = now.subtract(Duration(days: daysAgo, hours: i % 24));
-
-      // Verificar filtro de data
-      if (startDate != null && articleDate.isBefore(startDate)) continue;
-      if (endDate != null && articleDate.isAfter(endDate)) continue;
-
-      final titleSlug = _generateSlug(template['title'] as String);
-      final domain = _getDomainFromSource(template['source'] as String);
-      final url = 'https://$domain/noticias/${DateFormat('yyyy/MM').format(articleDate)}/$titleSlug';
-
-      results.add(NewsArticle(
-        id: 'mock_${now.millisecondsSinceEpoch}_$i',
-        title: template['title'] as String,
-        source: template['source'] as String,
-        url: url,
-        content: _generateContent(template['title'] as String, template['source'] as String),
-        date: articleDate,
+  static List<NewsArticle> _getFallbackNews() {
+    // Notícias de fallback para quando a busca falha
+    return [
+      NewsArticle(
+        id: 'fallback_1',
+        title: 'PCDF realiza operação contra crime organizado no Distrito Federal',
+        source: 'Sistema ALTOS',
+        url: 'https://example.com',
+        content: 'A Polícia Civil do Distrito Federal realizou uma operação para combater o crime organizado na região.',
+        date: DateTime.now(),
         category: NewsCategory.pcdf,
-        relevanceScore: (template['baseScore'] as int) + (i % 3),
-        engagement: 1000 + (i * 237),
-        type: template['type'] as NewsType,
-        preview: _generatePreview(template['title'] as String),
-      ));
-    }
-
-    results.sort((a, b) => b.date.compareTo(a.date));
-    return results.take(count).toList();
-  }
-
-  static String _generateSlug(String title) {
-    return title
-        .toLowerCase()
-        .replaceAll(RegExp(r'[^a-z0-9\s-]'), '')
-        .replaceAll(RegExp(r'\s+'), '-')
-        .replaceAll(RegExp(r'^-+|-+$'), '');
-  }
-
-  static String _generateContent(String title, String source) {
-    return 'A Polícia Civil do Distrito Federal (PCDF) realizou uma operação que resultou em significativas apreensões e prisões. "$title". A ação contou com o trabalho conjunto de várias delegacias especializadas e representa mais um avanço no combate ao crime organizado na região. A operação foi destacada pela $source como um marco nas investigações policiais do DF. Detalhes da operação incluem apreensão de materiais ilícitos, prisões em flagrante e cumprimento de mandados de busca e apreensão.';
-  }
-
-  static String _generatePreview(String title) {
-    return 'Operação da PCDF resulta em importantes apreensões e prisões no Distrito Federal. ' +
-        'A ação demonstra o compromisso da Polícia Civil com a segurança pública.';
+        relevanceScore: 8,
+        engagement: 1000,
+        type: NewsType.portal,
+        preview: 'Operação da PCDF no combate ao crime organizado...',
+      ),
+    ];
   }
 }
 
-// ========== WIDGETS (mantidos os mesmos, mas com ajustes no relatório) ==========
+// ========== WIDGETS (MANTIDOS IGUAIS) ==========
 
 class NewsItemWidget extends StatelessWidget {
   final NewsArticle article;
@@ -828,10 +749,13 @@ class NewsItemWidget extends StatelessWidget {
       'Metrópoles DF': Colors.purple[600]!,
       'Agência Brasil': Colors.green[600]!,
       'Google News': Colors.orange[700]!,
-      'PCDF Oficial': Colors.blue[800]!,
-      'SSP-DF': Colors.blue[600]!,
       'Jornal de Brasília': Colors.orange[600]!,
       'Brasil 61': Colors.red[600]!,
+      'R7 Distrito Federal': Colors.orange[800]!,
+      'UOL Notícias DF': Colors.blue[600]!,
+      'CNN Brasil Segurança': Colors.red[800]!,
+      'Terra Segurança': Colors.green[700]!,
+      'Sistema ALTOS': Colors.blue[800]!,
     };
     return colors[source] ?? Colors.grey[700]!;
   }
@@ -858,18 +782,12 @@ class NewsItemWidget extends StatelessWidget {
       if (await canLaunchUrl(uri)) {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
       } else {
-        final domain = uri.host;
-        final fallbackUri = Uri.parse('https://$domain');
-        if (await canLaunchUrl(fallbackUri)) {
-          await launchUrl(fallbackUri, mode: LaunchMode.externalApplication);
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Não foi possível abrir o link'),
-              backgroundColor: Colors.orange,
-            ),
-          );
-        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Não foi possível abrir o link'),
+            backgroundColor: Colors.orange,
+          ),
+        );
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1024,7 +942,6 @@ class _DateFilterWidgetState extends State<DateFilterWidget> {
       if (isStartDate) {
         widget.onDateChanged(picked, widget.endDate);
       } else {
-        // Para a data final, ajustar para o final do dia
         final endOfDay = DateTime(picked.year, picked.month, picked.day, 23, 59, 59);
         widget.onDateChanged(widget.startDate, endOfDay);
       }
@@ -1141,7 +1058,6 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _initializeSources();
-    // Iniciar busca automática ao abrir o app
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _startMonitoring();
     });
@@ -1153,18 +1069,19 @@ class _HomePageState extends State<HomePage> {
       'Correio Braziliense': true,
       'Metrópoles DF': true,
       'Agência Brasil': true,
-      'Google News': true,
-      'PCDF Oficial': true,
-      'SSP-DF': true,
       'Jornal de Brasília': true,
       'Brasil 61': true,
+      'R7 Distrito Federal': true,
+      'UOL Notícias DF': true,
+      'Google News': true,
+      'CNN Brasil Segurança': true,
+      'Terra Segurança': true,
     };
   }
 
   void _applyFilters() {
     List<NewsArticle> filtered = List.from(_articles);
 
-    // Filtro por data
     if (_startDate != null || _endDate != null) {
       filtered = filtered.where((article) {
         final articleDate = article.date;
@@ -1175,7 +1092,6 @@ class _HomePageState extends State<HomePage> {
       }).toList();
     }
 
-    // Filtro por fonte
     if (!_allSourcesSelected) {
       final selectedSources = _sourcesSelection.entries
           .where((entry) => entry.value)
@@ -1186,7 +1102,6 @@ class _HomePageState extends State<HomePage> {
       }
     }
 
-    // Filtro por busca
     if (_searchQuery.isNotEmpty) {
       filtered = filtered.where((article) {
         return article.title.toLowerCase().contains(_searchQuery.toLowerCase()) ||
@@ -1212,7 +1127,6 @@ class _HomePageState extends State<HomePage> {
     }
 
     try {
-      // Calcular estatísticas
       final totalNews = _filteredArticles.length;
       final highRelevance = _filteredArticles.where((a) => a.relevanceScore >= 8).length;
       final averageRelevance = _filteredArticles.where((a) => a.relevanceScore >= 5 && a.relevanceScore < 8).length;
