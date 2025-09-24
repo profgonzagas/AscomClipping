@@ -4,7 +4,7 @@ import 'package:intl/intl.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart' as xml;
-import 'package:html/parser.dart' as html_parser;
+import 'dart:convert';
 
 void main() {
   runApp(const PCDFClippingApp());
@@ -77,64 +77,44 @@ class NewsArticle {
   }
 }
 
-// ========== SERVIÇO DE BUSCA DE NOTÍCIAS CORRIGIDO ==========
+// ========== SERVIÇO DE BUSCA DE NOTÍCIAS REAL ==========
 class NewsSearchService {
   static final List<Map<String, dynamic>> _newsSources = [
     {
-      'name': 'Agência Brasil',
-      'domain': 'agenciabrasil.ebc.com.br',
-      'rss': 'https://agenciabrasil.ebc.com.br/rss/ultimasnoticias/feed.xml',
-      'type': NewsType.agencia,
+      'name': 'G1 Distrito Federal',
+      'rss': 'https://g1.globo.com/rss/g1/distrito-federal/',
+      'type': NewsType.portal,
       'weight': 10
     },
     {
-      'name': 'Jornal de Brasília',
-      'domain': 'jornaldebrasilia.com.br',
-      'rss': 'https://www.jornaldebrasilia.com.br/feed/',
+      'name': 'Correio Braziliense',
+      'rss': 'https://www.correiobraziliense.com.br/rss',
       'type': NewsType.jornal,
       'weight': 9
     },
     {
-      'name': 'G1 Distrito Federal',
-      'domain': 'g1.globo.com',
-      'rss': 'https://g1.globo.com/rss/g1/distrito-federal/',
+      'name': 'Metrópoles DF',
+      'rss': 'https://www.metropoles.com/feed',
       'type': NewsType.portal,
       'weight': 8
     },
     {
-      'name': 'Correio Braziliense',
-      'domain': 'correiobraziliense.com.br',
-      'rss': 'https://www.correiobraziliense.com.br/rss/ultimas-noticias',
-      'type': NewsType.jornal,
+      'name': 'Agência Brasil',
+      'rss': 'https://agenciabrasil.ebc.com.br/rss/ultimasnoticias/feed.xml',
+      'type': NewsType.agencia,
       'weight': 7
     },
     {
-      'name': 'Metrópoles DF',
-      'domain': 'metropoles.com',
-      'rss': 'https://www.metropoles.com/df/rss',
-      'type': NewsType.portal,
+      'name': 'Jornal de Brasília',
+      'rss': 'https://www.jornaldebrasilia.com.br/feed/',
+      'type': NewsType.jornal,
       'weight': 6
     },
     {
       'name': 'Brasil 61',
-      'domain': 'brasil61.com',
-      'rss': 'https://brasil61.com/feed',
+      'rss': 'https://brasil61.com/n/feed.rss',
       'type': NewsType.portal,
       'weight': 5
-    },
-    {
-      'name': 'R7 Distrito Federal',
-      'domain': 'r7.com',
-      'rss': 'https://r7.com/rss/editorias/distrito-federal',
-      'type': NewsType.portal,
-      'weight': 4
-    },
-    {
-      'name': 'UOL Notícias DF',
-      'domain': 'uol.com.br',
-      'rss': 'https://rss.uol.com.br/feed/noticias.xml',
-      'type': NewsType.portal,
-      'weight': 3
     },
   ];
 
@@ -149,41 +129,36 @@ class NewsSearchService {
     final results = <NewsArticle>[];
 
     try {
-      print('Iniciando busca de notícias em ${_newsSources.length} fontes...');
+      print('Buscando notícias em tempo real...');
 
-      // Buscar de todas as fontes RSS em paralelo
-      final List<Future<List<NewsArticle>>> rssFutures = [];
-
+      // Buscar de todas as fontes RSS
       for (var source in _newsSources) {
-        rssFutures.add(_fetchRSSFeed(
-          source['rss'] as String,
-          source['name'] as String,
-          source['type'] as NewsType,
-          startDate: startDate,
-          endDate: endDate,
-        ));
+        try {
+          final sourceNews = await _fetchRSSFeed(
+            source['rss'] as String,
+            source['name'] as String,
+            source['type'] as NewsType,
+            startDate: startDate,
+            endDate: endDate,
+          );
+          results.addAll(sourceNews);
+          print('${source['name']}: ${sourceNews.length} notícias');
 
-        // Pequeno delay para evitar sobrecarga
-        await Future.delayed(const Duration(milliseconds: 100));
+          await Future.delayed(const Duration(milliseconds: 500));
+        } catch (e) {
+          print('Erro na fonte ${source['name']}: $e');
+        }
       }
 
-      final rssResults = await Future.wait(rssFutures);
-      for (var sourceNews in rssResults) {
-        results.addAll(sourceNews);
-      }
+      // Buscar notícias de segurança pública
+      final securityNews = await _fetchSecurityNews(startDate: startDate, endDate: endDate);
+      results.addAll(securityNews);
 
-      print('Total de notícias brutas: ${results.length}');
-
-      // Buscar notícias do Google News separadamente
-      final googleNews = await _fetchGoogleNews(startDate: startDate, endDate: endDate);
-      results.addAll(googleNews);
-      print('Com Google News: ${results.length} notícias');
-
-      // Remover duplicatas baseadas no título e URL
+      // Remover duplicatas
       final uniqueResults = _removeDuplicates(results);
       print('Total único: ${uniqueResults.length} notícias');
 
-      // Filtro por palavras-chave da PCDF (mais flexível)
+      // Filtrar por relevância para PCDF
       final filteredResults = uniqueResults.where((article) {
         final text = '${article.title} ${article.content} ${article.preview}'.toLowerCase();
         return _pcdfKeywords.any((keyword) => text.contains(keyword.toLowerCase()));
@@ -191,184 +166,19 @@ class NewsSearchService {
 
       print('Após filtro PCDF: ${filteredResults.length} notícias');
 
-      // Se tiver poucas notícias, buscar notícias de segurança pública em geral
-      List<NewsArticle> finalResults;
-      if (filteredResults.length < 10) {
-        print('Poucas notícias PCDF encontradas. Buscando notícias de segurança geral...');
-        final securityNews = await _fetchSecurityNews(startDate: startDate, endDate: endDate);
-        finalResults = [...filteredResults, ...securityNews];
-        finalResults = _removeDuplicates(finalResults);
-        print('Com notícias de segurança: ${finalResults.length} notícias');
-      } else {
-        finalResults = filteredResults;
-      }
-
       // Ordenar por data e relevância
-      finalResults.sort((a, b) {
+      filteredResults.sort((a, b) {
         final dateCompare = b.date.compareTo(a.date);
         if (dateCompare != 0) return dateCompare;
         return b.relevanceScore.compareTo(a.relevanceScore);
       });
 
-      // Limitar ao número solicitado
-      return finalResults.take(count).toList();
+      return filteredResults.take(count).toList();
 
     } catch (e) {
-      print('Erro na busca de notícias: $e');
-      // Em caso de erro, retornar notícias de exemplo
-      return _getFallbackNews();
+      print('Erro geral na busca: $e');
+      return [];
     }
-  }
-
-  static Future<List<NewsArticle>> _fetchGoogleNews({DateTime? startDate, DateTime? endDate}) async {
-    final results = <NewsArticle>[];
-    try {
-      // URL do Google News RSS para busca de notícias sobre PCDF e segurança no DF
-      final queries = [
-        'pcdf+distrito+federal',
-        'polícia+civil+df',
-        'segurança+pública+brasília',
-        'crime+df',
-        'delegacia+distrito+federal'
-      ];
-
-      for (var query in queries) {
-        final encodedQuery = Uri.encodeQueryComponent(query);
-        final rssUrl = 'https://news.google.com/rss/search?q=$encodedQuery&hl=pt-BR&gl=BR&ceid=BR:pt-419';
-
-        print('Buscando Google News: $query');
-
-        final response = await http.get(
-          Uri.parse(rssUrl),
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'application/rss+xml, text/xml, */*',
-          },
-        );
-
-        if (response.statusCode == 200) {
-          final document = xml.XmlDocument.parse(response.body);
-          final items = document.findAllElements('item').take(10);
-
-          for (var item in items) {
-            try {
-              final titleElement = item.findElements('title').firstOrNull;
-              final linkElement = item.findElements('link').firstOrNull;
-              final pubDateElement = item.findElements('pubDate').firstOrNull;
-              final descriptionElement = item.findElements('description').firstOrNull;
-
-              if (titleElement == null || linkElement == null) continue;
-
-              final title = titleElement.text;
-              final link = linkElement.text;
-              final pubDate = pubDateElement?.text ?? DateTime.now().toString();
-              final description = descriptionElement?.text ?? '';
-
-              final articleDate = _parseDate(pubDate);
-
-              // Filtrar por data se especificado
-              if (startDate != null && articleDate.isBefore(startDate)) continue;
-              if (endDate != null && articleDate.isAfter(endDate)) continue;
-
-              final cleanTitle = _cleanHtml(title);
-              final cleanContent = _cleanHtml(description);
-
-              final relevanceScore = _calculateRelevance(cleanTitle + cleanContent);
-
-              final article = NewsArticle(
-                id: 'googlenews_${link.hashCode}',
-                title: cleanTitle,
-                source: 'Google News',
-                url: link,
-                content: cleanContent,
-                date: articleDate,
-                category: NewsCategory.pcdf,
-                relevanceScore: relevanceScore,
-                engagement: 1500,
-                type: NewsType.portal,
-                preview: _extractPreview(cleanContent),
-              );
-
-              results.add(article);
-            } catch (e) {
-              print('Erro ao parsear item do Google News: $e');
-            }
-          }
-        } else {
-          print('Erro HTTP ${response.statusCode} para Google News - Query: $query');
-        }
-
-        await Future.delayed(const Duration(milliseconds: 500));
-      }
-    } catch (e) {
-      print('Erro ao buscar Google News: $e');
-    }
-
-    print('Google News retornou: ${results.length} notícias');
-    return results;
-  }
-
-  static Future<List<NewsArticle>> _fetchSecurityNews({DateTime? startDate, DateTime? endDate}) async {
-    final results = <NewsArticle>[];
-    final securitySources = [
-      {
-        'name': 'CNN Brasil Segurança',
-        'rss': 'https://www.cnnbrasil.com.br/seguridad/rss/',
-        'type': NewsType.portal,
-      },
-      {
-        'name': 'Terra Segurança',
-        'rss': 'https://www.terra.com.br/rss/seguranca/',
-        'type': NewsType.portal,
-      },
-    ];
-
-    try {
-      for (var source in securitySources) {
-        final sourceResults = await _fetchRSSFeed(
-          source['rss'] as String,
-          source['name'] as String,
-          source['type'] as NewsType,
-          startDate: startDate,
-          endDate: endDate,
-        );
-
-        // Filtrar por termos de segurança
-        final filtered = sourceResults.where((article) {
-          final text = '${article.title} ${article.content}'.toLowerCase();
-          return text.contains('segurança') ||
-              text.contains('polícia') ||
-              text.contains('crime') ||
-              text.contains('df') ||
-              text.contains('distrito federal');
-        }).toList();
-
-        results.addAll(filtered);
-      }
-    } catch (e) {
-      print('Erro ao buscar notícias de segurança: $e');
-    }
-
-    return results;
-  }
-
-  static List<NewsArticle> _removeDuplicates(List<NewsArticle> articles) {
-    final seenTitles = <String>{};
-    final seenUrls = <String>{};
-    final uniqueArticles = <NewsArticle>[];
-
-    for (var article in articles) {
-      final normalizedTitle = article.title.toLowerCase().trim();
-      final normalizedUrl = article.url.toLowerCase().trim();
-
-      if (!seenTitles.contains(normalizedTitle) && !seenUrls.contains(normalizedUrl)) {
-        seenTitles.add(normalizedTitle);
-        seenUrls.add(normalizedUrl);
-        uniqueArticles.add(article);
-      }
-    }
-
-    return uniqueArticles;
   }
 
   static Future<List<NewsArticle>> _fetchRSSFeed(
@@ -379,6 +189,7 @@ class NewsSearchService {
         DateTime? endDate,
       }) async {
     final results = <NewsArticle>[];
+
     try {
       final response = await http.get(
         Uri.parse(url),
@@ -388,36 +199,28 @@ class NewsSearchService {
         },
       );
 
-      print('Buscando RSS: $source - Status: ${response.statusCode}');
-
       if (response.statusCode == 200) {
         final document = xml.XmlDocument.parse(response.body);
-        final items = document.findAllElements('item').take(20);
+        final items = document.findAllElements('item').take(15);
 
         for (var item in items) {
           try {
-            final titleElement = item.findElements('title').firstOrNull;
-            final linkElement = item.findElements('link').firstOrNull;
-            final pubDateElement = item.findElements('pubDate').firstOrNull;
-            final descriptionElement = item.findElements('description').firstOrNull;
-            final contentElement = item.findElements('content:encoded').firstOrNull;
+            final title = item.findElements('title').firstOrNull?.text ?? 'Sem título';
+            final link = item.findElements('link').firstOrNull?.text ?? '';
+            final pubDate = item.findElements('pubDate').firstOrNull?.text ?? '';
+            final description = item.findElements('description').firstOrNull?.text ?? '';
+            final content = item.findElements('content:encoded').firstOrNull?.text ?? description;
 
-            if (titleElement == null || linkElement == null) continue;
-
-            final title = titleElement.text;
-            final link = linkElement.text;
-            final pubDate = pubDateElement?.text ?? DateTime.now().toString();
-            final description = descriptionElement?.text ?? '';
-            final content = contentElement?.text ?? description;
+            if (title == 'Sem título' || link.isEmpty) continue;
 
             final articleDate = _parseDate(pubDate);
 
-            // Filtrar por data se especificado
+            // Filtrar por data
             if (startDate != null && articleDate.isBefore(startDate)) continue;
             if (endDate != null && articleDate.isAfter(endDate)) continue;
 
             final cleanTitle = _cleanHtml(title);
-            final cleanContent = _cleanHtml(content.isNotEmpty ? content : description);
+            final cleanContent = _cleanHtml(content);
 
             final relevanceScore = _calculateRelevance(cleanTitle + cleanContent);
 
@@ -437,70 +240,97 @@ class NewsSearchService {
 
             results.add(article);
           } catch (e) {
-            print('Erro ao parsear item do RSS $source: $e');
+            print('Erro ao processar item: $e');
           }
         }
-        print('$source: ${results.length} notícias processadas');
-      } else {
-        print('Erro HTTP ${response.statusCode} para $source - URL: $url');
       }
     } catch (e) {
-      print('Erro ao buscar RSS $source: $e');
+      print('Erro no RSS $source: $e');
     }
+
     return results;
   }
 
-  // ========== MÉTODOS AUXILIARES CORRIGIDOS ==========
-  static String _cleanHtml(String text) {
-    return text
+  static Future<List<NewsArticle>> _fetchSecurityNews({DateTime? startDate, DateTime? endDate}) async {
+    final results = <NewsArticle>[];
+
+    try {
+      // Fontes especializadas em segurança
+      final securityFeeds = [
+        'https://www.poder360.com.br/feed/',
+        'https://www.cnnbrasil.com.br/seguranca/feed/',
+      ];
+
+      for (var feed in securityFeeds) {
+        try {
+          final news = await _fetchRSSFeed(feed, 'Segurança Pública', NewsType.portal,
+              startDate: startDate, endDate: endDate);
+
+          // Filtrar por termos relacionados a DF/PCDF
+          final filtered = news.where((article) {
+            final text = article.title.toLowerCase() + article.content.toLowerCase();
+            return text.contains('df') ||
+                text.contains('distrito federal') ||
+                text.contains('brasília') ||
+                text.contains('pcdf');
+          }).toList();
+
+          results.addAll(filtered);
+        } catch (e) {
+          print('Erro no feed de segurança: $e');
+        }
+      }
+    } catch (e) {
+      print('Erro geral em segurança: $e');
+    }
+
+    return results;
+  }
+
+  static List<NewsArticle> _removeDuplicates(List<NewsArticle> articles) {
+    final seenUrls = <String>{};
+    final uniqueArticles = <NewsArticle>[];
+
+    for (var article in articles) {
+      if (!seenUrls.contains(article.url)) {
+        seenUrls.add(article.url);
+        uniqueArticles.add(article);
+      }
+    }
+
+    return uniqueArticles;
+  }
+
+  // ========== MÉTODOS AUXILIARES ==========
+  static String _cleanHtml(String htmlString) {
+    return htmlString
         .replaceAll(RegExp(r'<[^>]*>'), '')
         .replaceAll(RegExp(r'&nbsp;'), ' ')
         .replaceAll(RegExp(r'&amp;'), '&')
-        .replaceAll(RegExp(r'&lt;'), '<')
-        .replaceAll(RegExp(r'&gt;'), '>')
-        .replaceAll(RegExp(r'&quot;'), '"')
-        .replaceAll(RegExp(r'&#[0-9]+;'), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
   }
 
   static DateTime _parseDate(String dateString) {
     try {
-      // Tentar formatos comuns de RSS
       final formats = [
-        DateFormat('EEE, dd MMM yyyy HH:mm:ss Z', 'en'),
-        DateFormat('EEE, dd MMM yyyy HH:mm:ss', 'en'),
-        DateFormat('yyyy-MM-ddTHH:mm:ssZ'),
-        DateFormat('yyyy-MM-dd HH:mm:ss'),
-        DateFormat('dd/MM/yyyy HH:mm:ss'),
-        DateFormat('dd MMM yyyy HH:mm:ss', 'en'),
+        'EEE, dd MMM yyyy HH:mm:ss Z',
+        'EEE, dd MMM yyyy HH:mm:ss',
+        'yyyy-MM-ddTHH:mm:ssZ',
+        'yyyy-MM-dd HH:mm:ss',
+        'dd/MM/yyyy HH:mm:ss',
       ];
 
       for (var format in formats) {
         try {
-          return format.parse(dateString);
-        } catch (e) {
-          continue;
-        }
-      }
-
-      // Tentar formatos em português
-      final ptFormats = [
-        DateFormat('EEE, dd MMM yyyy HH:mm:ss Z', 'pt_BR'),
-        DateFormat('dd/MM/yyyy HH:mm:ss', 'pt_BR'),
-      ];
-
-      for (var format in ptFormats) {
-        try {
-          return format.parse(dateString);
-        } catch (e) {
+          return DateFormat(format).parse(dateString);
+        } catch (_) {
           continue;
         }
       }
 
       return DateTime.now();
     } catch (e) {
-      print('Erro ao parsear data: "$dateString" - $e');
       return DateTime.now();
     }
   }
@@ -509,73 +339,39 @@ class NewsSearchService {
     final lowerText = text.toLowerCase();
     var score = 3;
 
-    // Palavras-chave de alta relevância
     if (lowerText.contains('pcdf')) score += 4;
     if (lowerText.contains('polícia civil')) score += 4;
     if (lowerText.contains('distrito federal')) score += 2;
     if (lowerText.contains('df')) score += 1;
-
-    // Palavras-chave de média relevância
     if (lowerText.contains('delegacia')) score += 2;
     if (lowerText.contains('operacao') || lowerText.contains('operação')) score += 2;
     if (lowerText.contains('prisao') || lowerText.contains('prisão')) score += 2;
-    if (lowerText.contains('apreensao') || lowerText.contains('apreensão')) score += 2;
     if (lowerText.contains('investigação')) score += 2;
-
-    // Termos gerais de segurança
     if (lowerText.contains('segurança')) score += 1;
     if (lowerText.contains('crime')) score += 1;
-    if (lowerText.contains('policia') || lowerText.contains('polícia')) score += 1;
 
     return score.clamp(1, 10);
   }
 
   static int _calculateEngagement(String source) {
-    final baseEngagement = {
+    final engagementMap = {
       'G1 Distrito Federal': 5000,
       'Correio Braziliense': 4000,
       'Metrópoles DF': 3000,
       'Agência Brasil': 2000,
       'Jornal de Brasília': 1500,
       'Brasil 61': 1000,
-      'R7 Distrito Federal': 1200,
-      'UOL Notícias DF': 1800,
-      'Google News': 1500,
-      'CNN Brasil Segurança': 2000,
-      'Terra Segurança': 1200,
+      'Segurança Pública': 1200,
     };
-    return baseEngagement[source] ?? 500;
+    return engagementMap[source] ?? 500;
   }
 
-  static String _extractPreview(String description) {
-    final cleanDesc = _cleanHtml(description);
-    return cleanDesc.length > 120
-        ? cleanDesc.substring(0, 120) + '...'
-        : cleanDesc;
-  }
-
-  static List<NewsArticle> _getFallbackNews() {
-    // Notícias de fallback para quando a busca falha
-    return [
-      NewsArticle(
-        id: 'fallback_1',
-        title: 'PCDF realiza operação contra crime organizado no Distrito Federal',
-        source: 'Sistema ALTOS',
-        url: 'https://example.com',
-        content: 'A Polícia Civil do Distrito Federal realizou uma operação para combater o crime organizado na região.',
-        date: DateTime.now(),
-        category: NewsCategory.pcdf,
-        relevanceScore: 8,
-        engagement: 1000,
-        type: NewsType.portal,
-        preview: 'Operação da PCDF no combate ao crime organizado...',
-      ),
-    ];
+  static String _extractPreview(String content) {
+    return content.length > 120 ? content.substring(0, 120) + '...' : content;
   }
 }
 
-// ========== WIDGETS (MANTIDOS IGUAIS) ==========
-
+// ========== WIDGETS ==========
 class NewsItemWidget extends StatelessWidget {
   final NewsArticle article;
   final VoidCallback? onTap;
@@ -704,33 +500,15 @@ class NewsItemWidget extends StatelessWidget {
                       ),
                     ],
                   ),
-                  const SizedBox(width: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.grey[400]!),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Text(
-                      _getTypeText(article.type),
-                      style: TextStyle(
-                        color: Colors.grey[600],
-                        fontSize: 10,
-                      ),
-                    ),
-                  ),
                   const Spacer(),
                   ElevatedButton.icon(
                     onPressed: () => _launchUrl(article.url, context),
                     icon: const Icon(Icons.open_in_new, size: 14),
-                    label: const Text('Ler Notícia'),
+                    label: const Text('Abrir'),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF1a365d),
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(6),
-                      ),
                     ),
                   ),
                 ],
@@ -748,32 +526,17 @@ class NewsItemWidget extends StatelessWidget {
       'Correio Braziliense': Colors.blue[700]!,
       'Metrópoles DF': Colors.purple[600]!,
       'Agência Brasil': Colors.green[600]!,
-      'Google News': Colors.orange[700]!,
       'Jornal de Brasília': Colors.orange[600]!,
       'Brasil 61': Colors.red[600]!,
-      'R7 Distrito Federal': Colors.orange[800]!,
-      'UOL Notícias DF': Colors.blue[600]!,
-      'CNN Brasil Segurança': Colors.red[800]!,
-      'Terra Segurança': Colors.green[700]!,
-      'Sistema ALTOS': Colors.blue[800]!,
+      'Segurança Pública': Colors.blue[600]!,
     };
     return colors[source] ?? Colors.grey[700]!;
   }
 
   Color _getScoreColor(int score) {
-    if (score >= 9) return Colors.green[700]!;
-    if (score >= 7) return Colors.orange[700]!;
+    if (score >= 8) return Colors.green[700]!;
+    if (score >= 6) return Colors.orange[700]!;
     return Colors.red[700]!;
-  }
-
-  String _getTypeText(NewsType type) {
-    switch (type) {
-      case NewsType.jornal: return 'JORNAL';
-      case NewsType.portal: return 'PORTAL';
-      case NewsType.social: return 'SOCIAL';
-      case NewsType.agencia: return 'AGÊNCIA';
-      case NewsType.video: return 'VÍDEO';
-    }
   }
 
   Future<void> _launchUrl(String url, BuildContext context) async {
@@ -783,31 +546,22 @@ class NewsItemWidget extends StatelessWidget {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Não foi possível abrir o link'),
-            backgroundColor: Colors.orange,
-          ),
+          const SnackBar(content: Text('Não foi possível abrir o link')),
         );
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Erro: $e'),
-          backgroundColor: Colors.red,
-        ),
+        SnackBar(content: Text('Erro: $e')),
       );
     }
   }
 }
 
-// ========== CONTROL PANEL WIDGET ==========
 class ControlPanelWidget extends StatelessWidget {
   final bool isMonitoring;
   final int articleCount;
   final DateTime lastUpdate;
-  final VoidCallback onStartMonitoring;
-  final VoidCallback onStopMonitoring;
-  final VoidCallback onForceUpdate;
+  final VoidCallback onRefresh;
   final VoidCallback onGenerateReport;
 
   const ControlPanelWidget({
@@ -815,9 +569,7 @@ class ControlPanelWidget extends StatelessWidget {
     required this.isMonitoring,
     required this.articleCount,
     required this.lastUpdate,
-    required this.onStartMonitoring,
-    required this.onStopMonitoring,
-    required this.onForceUpdate,
+    required this.onRefresh,
     required this.onGenerateReport,
   }) : super(key: key);
 
@@ -837,7 +589,7 @@ class ControlPanelWidget extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Status: ${isMonitoring ? 'MONITORANDO' : 'PARADO'}',
+                        'Status: ${isMonitoring ? 'ATIVO' : 'INATIVO'}',
                         style: TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
@@ -847,50 +599,19 @@ class ControlPanelWidget extends StatelessWidget {
                       const SizedBox(height: 4),
                       Text(
                         'Notícias: $articleCount',
-                        style: const TextStyle(
-                          fontSize: 14,
-                          color: Colors.grey,
-                        ),
+                        style: const TextStyle(fontSize: 14, color: Colors.grey),
                       ),
                       Text(
                         'Última atualização: ${DateFormat('dd/MM/yyyy HH:mm').format(lastUpdate)}',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey,
-                        ),
+                        style: const TextStyle(fontSize: 12, color: Colors.grey),
                       ),
                     ],
                   ),
                 ),
-                Column(
-                  children: [
-                    if (!isMonitoring)
-                      ElevatedButton.icon(
-                        onPressed: onStartMonitoring,
-                        icon: const Icon(Icons.play_arrow),
-                        label: const Text('Iniciar'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.green,
-                          foregroundColor: Colors.white,
-                        ),
-                      )
-                    else
-                      ElevatedButton.icon(
-                        onPressed: onStopMonitoring,
-                        icon: const Icon(Icons.stop),
-                        label: const Text('Parar'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.red,
-                          foregroundColor: Colors.white,
-                        ),
-                      ),
-                    const SizedBox(height: 8),
-                    ElevatedButton.icon(
-                      onPressed: onForceUpdate,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('Atualizar'),
-                    ),
-                  ],
+                ElevatedButton.icon(
+                  onPressed: onRefresh,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Atualizar'),
                 ),
               ],
             ),
@@ -912,7 +633,6 @@ class ControlPanelWidget extends StatelessWidget {
   }
 }
 
-// ========== DATE FILTER WIDGET ==========
 class DateFilterWidget extends StatefulWidget {
   final DateTime? startDate;
   final DateTime? endDate;
@@ -962,10 +682,7 @@ class _DateFilterWidgetState extends State<DateFilterWidget> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Filtrar por Data:',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-            ),
+            const Text('Filtrar por Data:', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             Row(
               children: [
@@ -974,19 +691,11 @@ class _DateFilterWidgetState extends State<DateFilterWidget> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text('Data Inicial:'),
-                      const SizedBox(height: 4),
                       ElevatedButton(
                         onPressed: () => _selectDate(context, true),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.grey[100],
-                          foregroundColor: Colors.black87,
-                          minimumSize: const Size(double.infinity, 40),
-                        ),
-                        child: Text(
-                          widget.startDate != null
-                              ? DateFormat('dd/MM/yyyy').format(widget.startDate!)
-                              : 'Selecionar Data',
-                        ),
+                        child: Text(widget.startDate != null
+                            ? DateFormat('dd/MM/yyyy').format(widget.startDate!)
+                            : 'Selecionar'),
                       ),
                     ],
                   ),
@@ -997,33 +706,20 @@ class _DateFilterWidgetState extends State<DateFilterWidget> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text('Data Final:'),
-                      const SizedBox(height: 4),
                       ElevatedButton(
                         onPressed: () => _selectDate(context, false),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.grey[100],
-                          foregroundColor: Colors.black87,
-                          minimumSize: const Size(double.infinity, 40),
-                        ),
-                        child: Text(
-                          widget.endDate != null
-                              ? DateFormat('dd/MM/yyyy').format(widget.endDate!)
-                              : 'Selecionar Data',
-                        ),
+                        child: Text(widget.endDate != null
+                            ? DateFormat('dd/MM/yyyy').format(widget.endDate!)
+                            : 'Selecionar'),
                       ),
                     ],
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
             if (widget.startDate != null || widget.endDate != null)
               ElevatedButton(
                 onPressed: _clearDates,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.grey[300],
-                  foregroundColor: Colors.black87,
-                ),
                 child: const Text('Limpar Filtros'),
               ),
           ],
@@ -1045,38 +741,43 @@ class _HomePageState extends State<HomePage> {
   final List<NewsArticle> _articles = [];
   List<NewsArticle> _filteredArticles = [];
   String _searchQuery = '';
-  bool _isMonitoring = false;
   bool _isLoading = false;
   DateTime _lastUpdate = DateTime.now();
-
   DateTime? _startDate;
   DateTime? _endDate;
-  Map<String, bool> _sourcesSelection = {};
-  bool _allSourcesSelected = true;
 
   @override
   void initState() {
     super.initState();
-    _initializeSources();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _startMonitoring();
-    });
+    _loadNews();
   }
 
-  void _initializeSources() {
-    _sourcesSelection = {
-      'G1 Distrito Federal': true,
-      'Correio Braziliense': true,
-      'Metrópoles DF': true,
-      'Agência Brasil': true,
-      'Jornal de Brasília': true,
-      'Brasil 61': true,
-      'R7 Distrito Federal': true,
-      'UOL Notícias DF': true,
-      'Google News': true,
-      'CNN Brasil Segurança': true,
-      'Terra Segurança': true,
-    };
+  Future<void> _loadNews() async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final newArticles = await NewsSearchService.searchRealNews(
+        startDate: _startDate,
+        endDate: _endDate,
+      );
+
+      setState(() {
+        _articles.clear();
+        _articles.addAll(newArticles);
+        _filteredArticles = List.from(_articles);
+        _lastUpdate = DateTime.now();
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erro ao carregar notícias: $e')),
+      );
+    }
   }
 
   void _applyFilters() {
@@ -1084,29 +785,16 @@ class _HomePageState extends State<HomePage> {
 
     if (_startDate != null || _endDate != null) {
       filtered = filtered.where((article) {
-        final articleDate = article.date;
         final start = _startDate ?? DateTime(1900);
         final end = _endDate ?? DateTime(2100);
-
-        return articleDate.isAfter(start) && articleDate.isBefore(end);
+        return article.date.isAfter(start) && article.date.isBefore(end);
       }).toList();
-    }
-
-    if (!_allSourcesSelected) {
-      final selectedSources = _sourcesSelection.entries
-          .where((entry) => entry.value)
-          .map((entry) => entry.key)
-          .toList();
-      if (selectedSources.isNotEmpty) {
-        filtered = filtered.where((article) => selectedSources.contains(article.source)).toList();
-      }
     }
 
     if (_searchQuery.isNotEmpty) {
       filtered = filtered.where((article) {
         return article.title.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-            article.content.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-            article.source.toLowerCase().contains(_searchQuery.toLowerCase());
+            article.content.toLowerCase().contains(_searchQuery.toLowerCase());
       }).toList();
     }
 
@@ -1118,77 +806,32 @@ class _HomePageState extends State<HomePage> {
   Future<void> _generateReport() async {
     if (_filteredArticles.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Nenhuma notícia para gerar relatório'),
-          backgroundColor: Colors.orange,
-        ),
+        const SnackBar(content: Text('Nenhuma notícia para gerar relatório')),
       );
       return;
     }
 
     try {
-      final totalNews = _filteredArticles.length;
-      final highRelevance = _filteredArticles.where((a) => a.relevanceScore >= 8).length;
-      final averageRelevance = _filteredArticles.where((a) => a.relevanceScore >= 5 && a.relevanceScore < 8).length;
-      final lowRelevance = _filteredArticles.where((a) => a.relevanceScore < 5).length;
-
-      final sourcesCount = <String, int>{};
-      for (var article in _filteredArticles) {
-        sourcesCount[article.source] = (sourcesCount[article.source] ?? 0) + 1;
-      }
-
-      final sourcesSummary = sourcesCount.entries
-          .map((entry) => '${entry.key}: ${entry.value}')
-          .join('\n');
-
       final reportContent = '''
-RELATÓRIO PCDF CLIPPING - SISTEMA ALTOS
+RELATÓRIO PCDF CLIPPING
 
-Data de geração: ${DateFormat('dd/MM/yyyy às HH:mm').format(DateTime.now())}
-Período: ${_startDate != null ? DateFormat('dd/MM/yyyy').format(_startDate!) : 'Início'} à ${_endDate != null ? DateFormat('dd/MM/yyyy').format(_endDate!) : 'Fim'}
+Data: ${DateFormat('dd/MM/yyyy às HH:mm').format(DateTime.now())}
+Total de notícias: ${_filteredArticles.length}
 
-RESUMO ESTATÍSTICO:
-- Total de notícias: $totalNews
-- Alta relevância: $highRelevance
-- Média relevância: $averageRelevance
-- Baixa relevância: $lowRelevance
-
-DISTRIBUIÇÃO POR FONTE:
-$sourcesSummary
-
-DETALHAMENTO DAS NOTÍCIAS:
-
-${_filteredArticles.map((article) {
-        return '''
+${_filteredArticles.map((article) => '''
 📰 ${article.title}
    Fonte: ${article.source}
    Data: ${article.formattedDateTime}
    Relevância: ${article.relevanceScore}/10
-   Engajamento: ${article.engagementFormatted}
    URL: ${article.url}
-   ${'-' * 50}''';
-      }).join('\n\n')}
-
-Este relatório foi gerado automaticamente pelo Sistema ALTOS de Monitoramento.
+${'-' * 50}
+''').join('\n')}
       ''';
 
-      await Share.share(
-        reportContent,
-        subject: 'Relatório PCDF Clipping - ${DateFormat('dd_MM_yyyy').format(DateTime.now())}',
-      );
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Relatório gerado e compartilhado com sucesso!'),
-          backgroundColor: Colors.green,
-        ),
-      );
+      await Share.share(reportContent);
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Erro ao gerar relatório: $e'),
-          backgroundColor: Colors.red,
-        ),
+        SnackBar(content: Text('Erro ao gerar relatório: $e')),
       );
     }
   }
@@ -1201,53 +844,19 @@ Este relatório foi gerado automaticamente pelo Sistema ALTOS de Monitoramento.
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('PCDF Clipping'),
-            Text(
-              'Sistema de Monitoramento de Notícias',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.normal),
-            ),
+            Text('Sistema de Monitoramento', style: TextStyle(fontSize: 12)),
           ],
         ),
         backgroundColor: const Color(0xFF1a365d),
         foregroundColor: Colors.white,
-        actions: [
-          if (_isLoading)
-            const Padding(
-              padding: EdgeInsets.all(16.0),
-              child: SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                ),
-              ),
-            ),
-        ],
       ),
       body: Column(
         children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            color: const Color(0xFF2d3748),
-            child: const Text(
-              'SISTEMA ALTOS - MONITORAMENTO EM TEMPO REAL',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w600,
-                fontSize: 12,
-                letterSpacing: 1.2,
-              ),
-            ),
-          ),
           ControlPanelWidget(
-            isMonitoring: _isMonitoring,
+            isMonitoring: true,
             articleCount: _filteredArticles.length,
             lastUpdate: _lastUpdate,
-            onStartMonitoring: _startMonitoring,
-            onStopMonitoring: _stopMonitoring,
-            onForceUpdate: _forceUpdate,
+            onRefresh: _loadNews,
             onGenerateReport: _generateReport,
           ),
           DateFilterWidget(
@@ -1258,18 +867,16 @@ Este relatório foi gerado automaticamente pelo Sistema ALTOS de Monitoramento.
                 _startDate = start;
                 _endDate = end;
               });
-              _applyFilters();
+              _loadNews();
             },
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: TextField(
-              decoration: InputDecoration(
-                hintText: '🔍 Buscar notícias...',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: const InputDecoration(
+                hintText: 'Buscar notícias...',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.search),
               ),
               onChanged: (value) {
                 setState(() {
@@ -1279,103 +886,17 @@ Este relatório foi gerado automaticamente pelo Sistema ALTOS de Monitoramento.
               },
             ),
           ),
-          _buildSourcesFilter(),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-            child: Row(
-              children: [
-                const Text(
-                  '📰 FEED DE NOTÍCIAS',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF1a365d),
-                  ),
-                ),
-                const Spacer(),
-                Text(
-                  '${_filteredArticles.length} resultados',
-                  style: const TextStyle(
-                    color: Colors.grey,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
-          ),
           Expanded(
             child: _buildNewsList(),
           ),
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: _forceUpdate,
+        onPressed: _loadNews,
         child: const Icon(Icons.refresh),
         backgroundColor: const Color(0xFF1a365d),
       ),
     );
-  }
-
-  Widget _buildSourcesFilter() {
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Text(
-                  'Fontes de Notícia:',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                ),
-                const Spacer(),
-                GestureDetector(
-                  onTap: _toggleAllSources,
-                  child: Text(
-                    _allSourcesSelected ? 'Desmarcar todas' : 'Marcar todas',
-                    style: const TextStyle(
-                      color: Colors.blue,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: _sourcesSelection.entries.map((entry) {
-                return FilterChip(
-                  label: Text(entry.key),
-                  selected: entry.value,
-                  onSelected: (selected) {
-                    setState(() {
-                      _sourcesSelection[entry.key] = selected;
-                      _allSourcesSelected = _sourcesSelection.values.every((v) => v);
-                    });
-                    _applyFilters();
-                  },
-                );
-              }).toList(),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _toggleAllSources() {
-    setState(() {
-      _allSourcesSelected = !_allSourcesSelected;
-      for (var key in _sourcesSelection.keys) {
-        _sourcesSelection[key] = _allSourcesSelected;
-      }
-    });
-    _applyFilters();
   }
 
   Widget _buildNewsList() {
@@ -1392,52 +913,14 @@ Este relatório foi gerado automaticamente pelo Sistema ALTOS de Monitoramento.
       );
     }
 
-    if (_articles.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.search, size: 64, color: Colors.grey[300]),
-            const SizedBox(height: 16),
-            const Text(
-              'Nenhuma notícia monitorada',
-              style: TextStyle(fontSize: 18, color: Colors.grey),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Clique em "Iniciar" para começar o monitoramento',
-              style: TextStyle(color: Colors.grey),
-              textAlign: TextAlign.center,
-            ),
-          ],
-        ),
-      );
-    }
-
     if (_filteredArticles.isEmpty) {
-      return Center(
+      return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.filter_list, size: 64, color: Colors.grey[300]),
-            const SizedBox(height: 16),
-            const Text(
-              'Nenhum resultado para os filtros aplicados',
-              style: TextStyle(fontSize: 16, color: Colors.grey),
-            ),
-            const SizedBox(height: 8),
-            TextButton(
-              onPressed: () {
-                setState(() {
-                  _searchQuery = '';
-                  _startDate = null;
-                  _endDate = null;
-                  _toggleAllSources();
-                });
-                _applyFilters();
-              },
-              child: const Text('Limpar todos os filtros'),
-            ),
+            Icon(Icons.article, size: 64, color: Colors.grey),
+            SizedBox(height: 16),
+            Text('Nenhuma notícia encontrada'),
           ],
         ),
       );
@@ -1464,14 +947,11 @@ Este relatório foi gerado automaticamente pelo Sistema ALTOS de Monitoramento.
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('📰 ${article.source}', style: const TextStyle(fontWeight: FontWeight.bold)),
-              Text('📅 ${article.formattedDateTime}'),
-              Text('⭐ Score: ${article.relevanceScore} - ${article.relevanceText}'),
-              Text('👁️ Engajamento: ${article.engagementFormatted}'),
-              Text('🔗 Tipo: ${_getTypeText(article.type)}'),
+              Text('Fonte: ${article.source}'),
+              Text('Data: ${article.formattedDateTime}'),
+              Text('Relevância: ${article.relevanceScore}/10'),
               const SizedBox(height: 16),
-              const Text('📝 Conteúdo:', style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
+              const Text('Conteúdo:', style: TextStyle(fontWeight: FontWeight.bold)),
               Text(article.content),
             ],
           ),
@@ -1483,106 +963,27 @@ Este relatório foi gerado automaticamente pelo Sistema ALTOS de Monitoramento.
           ),
           ElevatedButton(
             onPressed: () => _launchUrl(article.url, context),
-            child: const Text('Abrir Notícia Original'),
-          ),
-          IconButton(
-            icon: const Icon(Icons.share),
-            onPressed: () {
-              Share.share(
-                'Confira esta notícia: ${article.title}\n\n${article.url}',
-                subject: 'Notícia PCDF Clipping',
-              );
-            },
+            child: const Text('Abrir Notícia'),
           ),
         ],
       ),
     );
   }
 
-  String _getTypeText(NewsType type) {
-    switch (type) {
-      case NewsType.jornal: return 'Jornal';
-      case NewsType.portal: return 'Portal';
-      case NewsType.social: return 'Rede Social';
-      case NewsType.agencia: return 'Agência';
-      case NewsType.video: return 'Vídeo';
-    }
-  }
-
   Future<void> _launchUrl(String url, BuildContext context) async {
     try {
       final uri = Uri.parse(url);
       if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
+        await launchUrl(uri);
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Erro ao abrir link: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
-  }
-
-  void _startMonitoring() {
-    setState(() {
-      _isMonitoring = true;
-      _isLoading = true;
-    });
-
-    _fetchRealNews();
-  }
-
-  void _stopMonitoring() {
-    setState(() {
-      _isMonitoring = false;
-    });
-  }
-
-  void _forceUpdate() {
-    if (_isMonitoring) {
-      _fetchRealNews();
-    }
-  }
-
-  Future<void> _fetchRealNews() async {
-    setState(() {
-      _isLoading = true;
-    });
-
-    try {
-      final newArticles = await NewsSearchService.searchRealNews(
-        count: 50,
-        startDate: _startDate,
-        endDate: _endDate,
-      );
-
-      setState(() {
-        _articles.clear();
-        _articles.addAll(newArticles);
-        _lastUpdate = DateTime.now();
-        _isLoading = false;
-        _applyFilters();
-      });
-
-      print('Busca concluída: ${newArticles.length} notícias encontradas');
-
-    } catch (e) {
-      setState(() {
-        _isLoading = false;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Erro ao buscar notícias: $e'),
-          backgroundColor: Colors.red,
-        ),
+        SnackBar(content: Text('Erro ao abrir link: $e')),
       );
     }
   }
 }
 
-// ========== APLICAÇÃO PRINCIPAL ==========
 class PCDFClippingApp extends StatelessWidget {
   const PCDFClippingApp({Key? key}) : super(key: key);
 
@@ -1595,13 +996,6 @@ class PCDFClippingApp extends StatelessWidget {
         appBarTheme: const AppBarTheme(
           backgroundColor: Color(0xFF1a365d),
           foregroundColor: Colors.white,
-          elevation: 0,
-        ),
-        cardTheme: CardTheme(
-          elevation: 2,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
-          ),
         ),
       ),
       home: const HomePage(),
