@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:intl/intl.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:http/http.dart' as http;
+import 'package:xml/xml.dart' as xml;
+import 'package:html/parser.dart' as html_parser;
 
 void main() {
   runApp(const PCDFClippingApp());
@@ -55,146 +58,412 @@ class NewsArticle {
   }
 }
 
-// ========== SERVIÇO DE BUSCA DE NOTÍCIAS ==========
+// ========== SERVIÇO DE BUSCA DE NOTÍCIAS REAL ==========
 class NewsSearchService {
   static final List<Map<String, dynamic>> _newsSources = [
     {
       'name': 'G1 Distrito Federal',
       'domain': 'g1.globo.com',
+      'rss': 'https://g1.globo.com/rss/g1/distrito-federal/',
       'type': NewsType.portal,
       'weight': 10
     },
     {
       'name': 'Correio Braziliense',
       'domain': 'correiobraziliense.com.br',
+      'rss': 'https://www.correiobraziliense.com.br/rss',
       'type': NewsType.jornal,
       'weight': 9
-    },
-    {
-      'name': 'UOL Notícias',
-      'domain': 'noticias.uol.com.br',
-      'type': NewsType.portal,
-      'weight': 9
-    },
-    {
-      'name': 'Terra Notícias',
-      'domain': 'terra.com.br',
-      'type': NewsType.portal,
-      'weight': 8
-    },
-    {
-      'name': 'CNN Brasil',
-      'domain': 'cnnbrasil.com.br',
-      'type': NewsType.portal,
-      'weight': 9
-    },
-    {
-      'name': 'Estadão',
-      'domain': 'estadao.com.br',
-      'type': NewsType.jornal,
-      'weight': 9
-    },
-    {
-      'name': 'O Globo',
-      'domain': 'oglobo.globo.com',
-      'type': NewsType.jornal,
-      'weight': 9
-    },
-    {
-      'name': 'Folha de S. Paulo',
-      'domain': 'folha.uol.com.br',
-      'type': NewsType.jornal,
-      'weight': 9
-    },
-    {
-      'name': 'R7 Notícias',
-      'domain': 'noticias.r7.com',
-      'type': NewsType.portal,
-      'weight': 8
-    },
-    {
-      'name': 'Jornal do Brasil',
-      'domain': 'jb.com.br',
-      'type': NewsType.jornal,
-      'weight': 8
     },
     {
       'name': 'Metrópoles DF',
       'domain': 'metropoles.com',
+      'rss': 'https://www.metropoles.com/df/rss',
       'type': NewsType.portal,
       'weight': 8
     },
     {
       'name': 'Agência Brasil',
       'domain': 'agenciabrasil.ebc.com.br',
+      'rss': 'https://agenciabrasil.ebc.com.br/rss/ultimasnoticias/feed.xml',
       'type': NewsType.agencia,
       'weight': 7
     },
   ];
 
-  static final List<Map<String, dynamic>> _newsTemplates = [
-    {
-      'title': 'PCDF prende quadrilha especializada em crimes cibernéticos no DF',
-      'keywords': ['pcdf', 'prende', 'quadrilha', 'crimes cibernéticos', 'DF'],
-      'baseScore': 9,
-    },
-    {
-      'title': 'Operação da PCDF apreende 500kg de drogas no Paranoá',
-      'keywords': ['operação', 'pcdf', 'apreende', 'drogas', 'paranoá'],
-      'baseScore': 10,
-    },
-    {
-      'title': 'PCDF inaugura nova delegacia especializada em Samambaia',
-      'keywords': ['pcdf', 'inaugura', 'delegacia', 'samambaia'],
-      'baseScore': 8,
-    },
-    {
-      'title': 'Delegados da PCDF participam de curso internacional de investigação',
-      'keywords': ['delegados', 'pcdf', 'curso', 'investigação'],
-      'baseScore': 7,
-    },
-    {
-      'title': 'PCDF desarticula esquema de roubo de cargas em rodovias do DF',
-      'keywords': ['pcdf', 'desarticula', 'roubo', 'cargas', 'rodovias'],
-      'baseScore': 9,
-    },
-    {
-      'title': 'Polícia Civil do DF prende suspeitos de homicídio em Ceilândia',
-      'keywords': ['polícia civil', 'df', 'prende', 'homicídio', 'ceilândia'],
-      'baseScore': 8,
-    },
-    {
-      'title': 'PCDF apreende armas e munições em operação no Itapoã',
-      'keywords': ['pcdf', 'apreende', 'armas', 'munições', 'itapoã'],
-      'baseScore': 9,
-    },
-    {
-      'title': 'Delegacia da PCDF investiga fraudes em licitações no governo',
-      'keywords': ['delegacia', 'pcdf', 'investiga', 'fraudes', 'licitações'],
-      'baseScore': 9,
-    },
+  static final List<String> _pcdfKeywords = [
+    'pcdf', 'polícia civil', 'polícia civil df', 'polícia civil distrito federal',
+    'delegacia', 'delegado', 'investigação', 'operacao', 'apreensao', 'prisao',
+    'crime', 'policia', 'segurança', 'df', 'distrito federal'
   ];
 
-  static List<NewsArticle> searchNews({int count = 10, DateTime? startDate, DateTime? endDate}) {
+  static Future<List<NewsArticle>> searchRealNews({int count = 20, DateTime? startDate, DateTime? endDate}) async {
+    final results = <NewsArticle>[];
+    final now = DateTime.now();
+
+    try {
+      // Buscar notícias do Google News RSS (busca por PCDF e termos relacionados)
+      final googleNews = await _fetchGoogleNews();
+      results.addAll(googleNews);
+
+      // Buscar notícias do G1 RSS
+      final g1News = await _fetchG1News();
+      results.addAll(g1News);
+
+      // Buscar de outras fontes RSS
+      for (var source in _newsSources) {
+        try {
+          final sourceNews = await _fetchRSSFeed(
+              source['rss'] as String,
+              source['name'] as String,
+              source['type'] as NewsType
+          );
+          results.addAll(sourceNews);
+        } catch (e) {
+          print('Erro ao buscar RSS de ${source['name']}: $e');
+        }
+      }
+
+      // Filtro por palavras-chave da PCDF
+      final filteredResults = results.where((article) {
+        final text = '${article.title} ${article.content}'.toLowerCase();
+        return _pcdfKeywords.any((keyword) => text.contains(keyword));
+      }).toList();
+
+      // Ordenar por data e limitar quantidade
+      filteredResults.sort((a, b) => b.date.compareTo(a.date));
+
+      return filteredResults.take(count).toList();
+
+    } catch (e) {
+      print('Erro na busca de notícias: $e');
+      // Fallback para notícias mock em caso de erro
+      return _generateMockNews(count: count, startDate: startDate, endDate: endDate);
+    }
+  }
+
+  static Future<List<NewsArticle>> _fetchGoogleNews() async {
+    final results = <NewsArticle>[];
+    try {
+      // Google News RSS para busca de PCDF
+      final response = await http.get(Uri.parse(
+          'https://news.google.com/rss/search?q=PCDF+Pol%C3%ADcia+Civil+Distrito+Federal&hl=pt-BR&gl=BR&ceid=BR:pt-419'
+      ));
+
+      if (response.statusCode == 200) {
+        final document = xml.XmlDocument.parse(response.body);
+        final items = document.findAllElements('item');
+
+        for (var item in items) {
+          try {
+            final title = item.findElements('title').first.text;
+            final link = item.findElements('link').first.text;
+            final pubDate = item.findElements('pubDate').first.text;
+            final description = item.findElements('description').first.text;
+
+            final article = NewsArticle(
+              id: link.hashCode.toString(),
+              title: _cleanHtml(title),
+              source: 'Google News',
+              url: link,
+              content: _cleanHtml(description),
+              date: _parseDate(pubDate),
+              category: NewsCategory.pcdf,
+              relevanceScore: _calculateRelevance(title + description),
+              engagement: 1000,
+              type: NewsType.portal,
+              preview: _extractPreview(description),
+            );
+
+            results.add(article);
+          } catch (e) {
+            print('Erro ao parsear item do Google News: $e');
+          }
+        }
+      }
+    } catch (e) {
+      print('Erro ao buscar Google News: $e');
+    }
+    return results;
+  }
+
+  static Future<List<NewsArticle>> _fetchG1News() async {
+    final results = <NewsArticle>[];
+    try {
+      final response = await http.get(Uri.parse(
+          'https://g1.globo.com/rss/g1/distrito-federal/'
+      ));
+
+      if (response.statusCode == 200) {
+        final document = xml.XmlDocument.parse(response.body);
+        final items = document.findAllElements('item');
+
+        for (var item in items) {
+          try {
+            final title = item.findElements('title').first.text;
+            final link = item.findElements('link').first.text;
+            final pubDate = item.findElements('pubDate').first.text;
+            final description = item.findElements('description').first.text;
+
+            // Verificar se é relevante para PCDF
+            final content = title + ' ' + description;
+            if (!_isRelevantToPCDF(content)) continue;
+
+            final article = NewsArticle(
+              id: link.hashCode.toString(),
+              title: _cleanHtml(title),
+              source: 'G1 Distrito Federal',
+              url: link,
+              content: _cleanHtml(description),
+              date: _parseDate(pubDate),
+              category: NewsCategory.pcdf,
+              relevanceScore: _calculateRelevance(content),
+              engagement: 1500,
+              type: NewsType.portal,
+              preview: _extractPreview(description),
+            );
+
+            results.add(article);
+          } catch (e) {
+            print('Erro ao parsear item do G1: $e');
+          }
+        }
+      }
+    } catch (e) {
+      print('Erro ao buscar G1 RSS: $e');
+    }
+    return results;
+  }
+
+  static Future<List<NewsArticle>> _fetchRSSFeed(String url, String source, NewsType type) async {
+    final results = <NewsArticle>[];
+    try {
+      final response = await http.get(Uri.parse(url));
+
+      if (response.statusCode == 200) {
+        final document = xml.XmlDocument.parse(response.body);
+        final items = document.findAllElements('item').take(10); // Limitar por fonte
+
+        for (var item in items) {
+          try {
+            final title = item.findElements('title').first.text;
+            final link = item.findElements('link').first.text;
+            final pubDate = item.findElements('pubDate').first.text;
+            final description = item.findElements('description').first.text;
+
+            // Verificar relevância para PCDF
+            final content = title + ' ' + description;
+            if (!_isRelevantToPCDF(content)) continue;
+
+            final article = NewsArticle(
+              id: '${source}_${link.hashCode}',
+              title: _cleanHtml(title),
+              source: source,
+              url: link,
+              content: _cleanHtml(description),
+              date: _parseDate(pubDate),
+              category: NewsCategory.pcdf,
+              relevanceScore: _calculateRelevance(content),
+              engagement: 800,
+              type: type,
+              preview: _extractPreview(description),
+            );
+
+            results.add(article);
+          } catch (e) {
+            print('Erro ao parsear item do RSS $source: $e');
+          }
+        }
+      }
+    } catch (e) {
+      print('Erro ao buscar RSS $source: $e');
+    }
+    return results;
+  }
+
+  static Future<List<NewsArticle>> scrapeNewsWebsites() async {
+    final results = <NewsArticle>[];
+
+    // Scraping de sites que não possuem RSS adequado
+    final websites = [
+      {
+        'name': 'PCDF Oficial',
+        'url': 'https://www.pcdf.df.gov.br/noticias',
+        'type': NewsType.portal,
+      },
+      {
+        'name': 'SSP-DF',
+        'url': 'https://www.ssp.df.gov.br/noticias',
+        'type': NewsType.portal,
+      },
+    ];
+
+    for (var site in websites) {
+      try {
+        final response = await http.get(Uri.parse(site['url'] as String));
+        if (response.statusCode == 200) {
+          final scrapedNews = await _scrapeWebsiteContent(
+              response.body,
+              site['name'] as String,
+              site['type'] as NewsType
+          );
+          results.addAll(scrapedNews);
+        }
+      } catch (e) {
+        print('Erro no scraping de ${site['name']}: $e');
+      }
+    }
+
+    return results;
+  }
+
+  static Future<List<NewsArticle>> _scrapeWebsiteContent(String html, String source, NewsType type) async {
+    final results = <NewsArticle>[];
+    try {
+      final document = html_parser.parse(html);
+
+      // Tentar encontrar notícias por seletores comuns
+      final newsElements = document.querySelectorAll('h1, h2, h3, .news, .noticia, .title, .titulo');
+
+      for (var element in newsElements.take(5)) {
+        try {
+          final title = element.text.trim();
+          if (title.length < 10 || !_isRelevantToPCDF(title)) continue;
+
+          // Tentar encontrar link
+          var link = element.querySelector('a')?.attributes['href'] ?? '';
+          if (link.isNotEmpty && !link.startsWith('http')) {
+            link = 'https://${_getDomainFromSource(source)}$link';
+          }
+
+          final article = NewsArticle(
+            id: '${source}_${title.hashCode}',
+            title: title,
+            source: source,
+            url: link.isNotEmpty ? link : 'https://${_getDomainFromSource(source)}',
+            content: title,
+            date: DateTime.now(),
+            category: NewsCategory.pcdf,
+            relevanceScore: _calculateRelevance(title),
+            engagement: 500,
+            type: type,
+            preview: title.length > 100 ? title.substring(0, 100) + '...' : title,
+          );
+
+          results.add(article);
+        } catch (e) {
+          print('Erro ao parsear elemento do scraping: $e');
+        }
+      }
+    } catch (e) {
+      print('Erro no parsing HTML: $e');
+    }
+    return results;
+  }
+
+  // ========== MÉTODOS AUXILIARES ==========
+  static String _cleanHtml(String text) {
+    return text
+        .replaceAll(RegExp(r'<[^>]*>'), '')
+        .replaceAll(RegExp(r'&[^;]+;'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
+  static DateTime _parseDate(String dateString) {
+    try {
+      // Tentar vários formatos de data comum em RSS
+      final formats = [
+        DateFormat('EEE, dd MMM yyyy HH:mm:ss Z', 'en'),
+        DateFormat('EEE, dd MMM yyyy HH:mm:ss', 'en'),
+        DateFormat('yyyy-MM-ddTHH:mm:ssZ'),
+        DateFormat('yyyy-MM-dd HH:mm:ss'),
+        DateFormat('dd/MM/yyyy HH:mm:ss'),
+      ];
+
+      for (var format in formats) {
+        try {
+          return format.parse(dateString);
+        } catch (e) {
+          continue;
+        }
+      }
+
+      // Se nenhum formato funcionar, usar data atual
+      return DateTime.now();
+    } catch (e) {
+      return DateTime.now();
+    }
+  }
+
+  static bool _isRelevantToPCDF(String text) {
+    final lowerText = text.toLowerCase();
+    return _pcdfKeywords.any((keyword) => lowerText.contains(keyword));
+  }
+
+  static int _calculateRelevance(String text) {
+    final lowerText = text.toLowerCase();
+    var score = 5; // Score base
+
+    // Palavras-chave de alta relevância
+    if (lowerText.contains('pcdf')) score += 3;
+    if (lowerText.contains('polícia civil')) score += 3;
+    if (lowerText.contains('distrito federal')) score += 2;
+
+    // Palavras-chave de média relevância
+    if (lowerText.contains('delegacia')) score += 2;
+    if (lowerText.contains('operacao')) score += 2;
+    if (lowerText.contains('prisao') || lowerText.contains('prisão')) score += 2;
+    if (lowerText.contains('apreensao') || lowerText.contains('apreensão')) score += 2;
+
+    // Limitar score máximo
+    return score.clamp(1, 10);
+  }
+
+  static String _extractPreview(String description) {
+    final cleanDesc = _cleanHtml(description);
+    return cleanDesc.length > 150
+        ? cleanDesc.substring(0, 150) + '...'
+        : cleanDesc;
+  }
+
+  static String _getDomainFromSource(String source) {
+    final domains = {
+      'G1 Distrito Federal': 'g1.globo.com',
+      'Correio Braziliense': 'correiobraziliense.com.br',
+      'Metrópoles DF': 'metropoles.com',
+      'Agência Brasil': 'agenciabrasil.ebc.com.br',
+      'PCDF Oficial': 'pcdf.df.gov.br',
+      'SSP-DF': 'ssp.df.gov.br',
+    };
+    return domains[source] ?? 'google.com';
+  }
+
+  // ========== FALLBACK PARA DADOS MOCK ==========
+  static List<NewsArticle> _generateMockNews({int count = 10, DateTime? startDate, DateTime? endDate}) {
     final results = <NewsArticle>[];
     final now = DateTime.now();
     final random = DateTime.now().millisecondsSinceEpoch;
 
-    // Filtro de data
-    final effectiveStartDate = startDate ?? now.subtract(const Duration(days: 7));
-    final effectiveEndDate = endDate ?? now;
+    final newsTemplates = [
+      {
+        'title': 'PCDF prende quadrilha especializada em crimes cibernéticos no DF',
+        'keywords': ['pcdf', 'prende', 'quadrilha', 'crimes cibernéticos', 'DF'],
+        'baseScore': 9,
+      },
+      {
+        'title': 'Operação da PCDF apreende 500kg de drogas no Paranoá',
+        'keywords': ['operação', 'pcdf', 'apreende', 'drogas', 'paranoá'],
+        'baseScore': 10,
+      },
+    ];
 
     for (int i = 0; i < count; i++) {
-      final template = _newsTemplates[i % _newsTemplates.length];
+      final template = newsTemplates[i % newsTemplates.length];
       final source = _newsSources[i % _newsSources.length];
 
-      // Gerar data aleatória dentro do período
-      final daysRange = effectiveEndDate.difference(effectiveStartDate).inDays;
-      final randomDays = (random + i) % (daysRange + 1);
-      final articleDate = effectiveStartDate.add(Duration(days: randomDays));
-
-      // Gerar URL específica baseada no título e fonte
-      final titleSlug = _generateSlug(template['title']);
+      final articleDate = now.subtract(Duration(days: i % 7));
+      final titleSlug = _generateSlug(template['title'] as String);
       final url = 'https://${source['domain']}/noticias/${DateFormat('yyyy/MM').format(articleDate)}/$titleSlug';
 
       results.add(NewsArticle(
@@ -205,16 +474,14 @@ class NewsSearchService {
         content: _generateContent(template['title'] as String, source['name'] as String),
         date: articleDate,
         category: NewsCategory.pcdf,
-        relevanceScore: (template['baseScore'] as int) + (i % 3), // Variação pequena
-        engagement: 1000 + (i * 237), // Engajamento variado
+        relevanceScore: (template['baseScore'] as int) + (i % 3),
+        engagement: 1000 + (i * 237),
         type: source['type'] as NewsType,
         preview: _generatePreview(template['title'] as String),
       ));
     }
 
-    // Ordenar por data mais recente
     results.sort((a, b) => b.date.compareTo(a.date));
-
     return results;
   }
 
@@ -264,7 +531,6 @@ class NewsItemWidget extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Cabeçalho com fonte e data
               Row(
                 children: [
                   Container(
@@ -305,8 +571,6 @@ class NewsItemWidget extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 12),
-
-              // Título
               Text(
                 article.title,
                 style: const TextStyle(
@@ -319,8 +583,6 @@ class NewsItemWidget extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
               ),
               const SizedBox(height: 8),
-
-              // Preview do conteúdo
               if (article.preview != null) ...[
                 Text(
                   article.preview!,
@@ -334,11 +596,8 @@ class NewsItemWidget extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
               ],
-
-              // Rodapé com score e botão
               Row(
                 children: [
-                  // Score de relevância
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
@@ -365,8 +624,6 @@ class NewsItemWidget extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 8),
-
-                  // Engajamento
                   Row(
                     children: [
                       Icon(Icons.visibility, size: 14, color: Colors.grey[600]),
@@ -381,8 +638,6 @@ class NewsItemWidget extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(width: 8),
-
-                  // Tipo de mídia
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
@@ -397,10 +652,7 @@ class NewsItemWidget extends StatelessWidget {
                       ),
                     ),
                   ),
-
                   const Spacer(),
-
-                  // Botão Ler Notícia
                   ElevatedButton.icon(
                     onPressed: () => _launchUrl(article.url, context),
                     icon: const Icon(Icons.open_in_new, size: 14),
@@ -427,16 +679,11 @@ class NewsItemWidget extends StatelessWidget {
     final colors = {
       'G1 Distrito Federal': Colors.red[700]!,
       'Correio Braziliense': Colors.blue[700]!,
-      'UOL Notícias': Colors.orange[700]!,
-      'Terra Notícias': Colors.green[700]!,
-      'CNN Brasil': Colors.red[600]!,
-      'Estadão': Colors.blue[800]!,
-      'O Globo': Colors.blue[600]!,
-      'Folha de S. Paulo': Colors.orange[800]!,
-      'R7 Notícias': Colors.purple[700]!,
-      'Jornal do Brasil': Colors.blue[700]!,
       'Metrópoles DF': Colors.purple[600]!,
       'Agência Brasil': Colors.green[600]!,
+      'Google News': Colors.orange[700]!,
+      'PCDF Oficial': Colors.blue[800]!,
+      'SSP-DF': Colors.blue[600]!,
     };
     return colors[source] ?? Colors.grey[700]!;
   }
@@ -461,12 +708,8 @@ class NewsItemWidget extends StatelessWidget {
     try {
       final uri = Uri.parse(url);
       if (await canLaunchUrl(uri)) {
-        await launchUrl(
-          uri,
-          mode: LaunchMode.externalApplication,
-        );
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
       } else {
-        // Fallback: tentar abrir a página principal do site
         final domain = uri.host;
         final fallbackUri = Uri.parse('https://$domain');
         if (await canLaunchUrl(fallbackUri)) {
@@ -491,6 +734,7 @@ class NewsItemWidget extends StatelessWidget {
   }
 }
 
+// ========== CONTROL PANEL WIDGET ==========
 class ControlPanelWidget extends StatelessWidget {
   final bool isMonitoring;
   final int articleCount;
@@ -515,128 +759,94 @@ class ControlPanelWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       margin: const EdgeInsets.all(12),
-      elevation: 2,
+      elevation: 4,
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
             Row(
               children: [
-                // Status Indicator
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: isMonitoring ? Colors.green[50] : Colors.grey[50],
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                      color: isMonitoring ? Colors.green : Colors.grey,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(
-                        isMonitoring ? Icons.circle : Icons.circle_outlined,
-                        size: 12,
-                        color: isMonitoring ? Colors.green : Colors.grey,
-                      ),
-                      const SizedBox(width: 6),
                       Text(
-                        isMonitoring ? 'MONITORANDO' : 'PARADO',
+                        'Status: ${isMonitoring ? 'MONITORANDO' : 'PARADO'}',
                         style: TextStyle(
-                          color: isMonitoring ? Colors.green : Colors.grey,
-                          fontWeight: FontWeight.w600,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: isMonitoring ? Colors.green : Colors.red,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Notícias: $articleCount',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey,
+                        ),
+                      ),
+                      Text(
+                        'Última atualização: ${DateFormat('dd/MM/yyyy HH:mm').format(lastUpdate)}',
+                        style: const TextStyle(
                           fontSize: 12,
+                          color: Colors.grey,
                         ),
                       ),
                     ],
                   ),
                 ),
-                const Spacer(),
-
-                // Botões de Controle
-                Row(
+                Column(
                   children: [
-                    ElevatedButton.icon(
-                      onPressed: isMonitoring ? null : onStartMonitoring,
-                      icon: const Icon(Icons.play_arrow, size: 18),
-                      label: const Text('Iniciar'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    if (!isMonitoring)
+                      ElevatedButton.icon(
+                        onPressed: onStartMonitoring,
+                        icon: const Icon(Icons.play_arrow),
+                        label: const Text('Iniciar'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          foregroundColor: Colors.white,
+                        ),
+                      )
+                    else
+                      ElevatedButton.icon(
+                        onPressed: onStopMonitoring,
+                        icon: const Icon(Icons.stop),
+                        label: const Text('Parar'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.red,
+                          foregroundColor: Colors.white,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
+                    const SizedBox(height: 8),
                     ElevatedButton.icon(
-                      onPressed: isMonitoring ? onStopMonitoring : null,
-                      icon: const Icon(Icons.stop, size: 18),
-                      label: const Text('Parar'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.red,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    IconButton(
                       onPressed: onForceUpdate,
                       icon: const Icon(Icons.refresh),
-                      tooltip: 'Atualizar Agora',
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.blue[50],
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    IconButton(
-                      onPressed: onGenerateReport,
-                      icon: const Icon(Icons.article),
-                      tooltip: 'Gerar Relatório',
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.orange[50],
-                      ),
+                      label: const Text('Atualizar'),
                     ),
                   ],
                 ),
               ],
             ),
             const SizedBox(height: 12),
-
-            // Informações
-            Row(
-              children: [
-                _buildInfoItem(Icons.article, '$articleCount notícias'),
-                const Spacer(),
-                _buildInfoItem(Icons.access_time, _formatTime(lastUpdate)),
-              ],
+            ElevatedButton.icon(
+              onPressed: onGenerateReport,
+              icon: const Icon(Icons.article),
+              label: const Text('Gerar Relatório'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF1a365d),
+                foregroundColor: Colors.white,
+                minimumSize: const Size(double.infinity, 40),
+              ),
             ),
           ],
         ),
       ),
     );
   }
-
-  Widget _buildInfoItem(IconData icon, String text) {
-    return Row(
-      children: [
-        Icon(icon, size: 14, color: Colors.grey),
-        const SizedBox(width: 4),
-        Text(
-          text,
-          style: const TextStyle(
-            color: Colors.grey,
-            fontSize: 12,
-          ),
-        ),
-      ],
-    );
-  }
-
-  String _formatTime(DateTime date) {
-    return 'Última: ${DateFormat('HH:mm').format(date)}';
-  }
 }
 
+// ========== DATE FILTER WIDGET ==========
 class DateFilterWidget extends StatefulWidget {
   final DateTime? startDate;
   final DateTime? endDate;
@@ -654,58 +864,32 @@ class DateFilterWidget extends StatefulWidget {
 }
 
 class _DateFilterWidgetState extends State<DateFilterWidget> {
-  late DateTime? _startDate;
-  late DateTime? _endDate;
-
-  @override
-  void initState() {
-    super.initState();
-    _startDate = widget.startDate;
-    _endDate = widget.endDate;
-  }
-
-  Future<void> _selectStartDate(BuildContext context) async {
+  Future<void> _selectDate(BuildContext context, bool isStartDate) async {
     final DateTime? picked = await showDatePicker(
       context: context,
-      initialDate: _startDate ?? DateTime.now(),
+      initialDate: isStartDate ? widget.startDate ?? DateTime.now() : widget.endDate ?? DateTime.now(),
       firstDate: DateTime(2020),
       lastDate: DateTime.now(),
     );
-    if (picked != null) {
-      setState(() {
-        _startDate = picked;
-        widget.onDateChanged(_startDate, _endDate);
-      });
-    }
-  }
 
-  Future<void> _selectEndDate(BuildContext context) async {
-    final DateTime? picked = await showDatePicker(
-      context: context,
-      initialDate: _endDate ?? DateTime.now(),
-      firstDate: _startDate ?? DateTime(2020),
-      lastDate: DateTime.now(),
-    );
     if (picked != null) {
-      setState(() {
-        _endDate = picked;
-        widget.onDateChanged(_startDate, _endDate);
-      });
+      if (isStartDate) {
+        widget.onDateChanged(picked, widget.endDate);
+      } else {
+        widget.onDateChanged(widget.startDate, picked);
+      }
     }
   }
 
   void _clearDates() {
-    setState(() {
-      _startDate = null;
-      _endDate = null;
-      widget.onDateChanged(null, null);
-    });
+    widget.onDateChanged(null, null);
   }
 
   @override
   Widget build(BuildContext context) {
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      elevation: 2,
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -715,37 +899,26 @@ class _DateFilterWidgetState extends State<DateFilterWidget> {
               'Filtrar por Data:',
               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
             Row(
               children: [
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('Data Inicial:', style: TextStyle(fontSize: 12)),
+                      const Text('Data Inicial:'),
                       const SizedBox(height: 4),
-                      InkWell(
-                        onTap: () => _selectStartDate(context),
-                        child: Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            border: Border.all(color: Colors.grey),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.calendar_today, size: 16),
-                              const SizedBox(width: 8),
-                              Text(
-                                _startDate != null
-                                    ? DateFormat('dd/MM/yyyy').format(_startDate!)
-                                    : 'Selecionar data',
-                                style: TextStyle(
-                                  color: _startDate != null ? Colors.black : Colors.grey,
-                                ),
-                              ),
-                            ],
-                          ),
+                      ElevatedButton(
+                        onPressed: () => _selectDate(context, true),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.grey[100],
+                          foregroundColor: Colors.black87,
+                          minimumSize: const Size(double.infinity, 40),
+                        ),
+                        child: Text(
+                          widget.startDate != null
+                              ? DateFormat('dd/MM/yyyy').format(widget.startDate!)
+                              : 'Selecionar Data',
                         ),
                       ),
                     ],
@@ -756,30 +929,19 @@ class _DateFilterWidgetState extends State<DateFilterWidget> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('Data Final:', style: TextStyle(fontSize: 12)),
+                      const Text('Data Final:'),
                       const SizedBox(height: 4),
-                      InkWell(
-                        onTap: () => _selectEndDate(context),
-                        child: Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            border: Border.all(color: Colors.grey),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.calendar_today, size: 16),
-                              const SizedBox(width: 8),
-                              Text(
-                                _endDate != null
-                                    ? DateFormat('dd/MM/yyyy').format(_endDate!)
-                                    : 'Selecionar data',
-                                style: TextStyle(
-                                  color: _endDate != null ? Colors.black : Colors.grey,
-                                ),
-                              ),
-                            ],
-                          ),
+                      ElevatedButton(
+                        onPressed: () => _selectDate(context, false),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.grey[100],
+                          foregroundColor: Colors.black87,
+                          minimumSize: const Size(double.infinity, 40),
+                        ),
+                        child: Text(
+                          widget.endDate != null
+                              ? DateFormat('dd/MM/yyyy').format(widget.endDate!)
+                              : 'Selecionar Data',
                         ),
                       ),
                     ],
@@ -788,10 +950,14 @@ class _DateFilterWidgetState extends State<DateFilterWidget> {
               ],
             ),
             const SizedBox(height: 8),
-            if (_startDate != null || _endDate != null)
-              TextButton(
+            if (widget.startDate != null || widget.endDate != null)
+              ElevatedButton(
                 onPressed: _clearDates,
-                child: const Text('Limpar filtros de data'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.grey[300],
+                  foregroundColor: Colors.black87,
+                ),
+                child: const Text('Limpar Filtros'),
               ),
           ],
         ),
@@ -816,11 +982,8 @@ class _HomePageState extends State<HomePage> {
   bool _isLoading = false;
   DateTime _lastUpdate = DateTime.now();
 
-  // Filtros de data
   DateTime? _startDate;
   DateTime? _endDate;
-
-  // Filtros de fonte
   Map<String, bool> _sourcesSelection = {};
   bool _allSourcesSelected = true;
 
@@ -831,16 +994,20 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _initializeSources() {
-    // Inicializar todas as fontes como selecionadas
-    for (var source in NewsSearchService._newsSources) {
-      _sourcesSelection[source['name'] as String] = true;
-    }
+    _sourcesSelection = {
+      'G1 Distrito Federal': true,
+      'Correio Braziliense': true,
+      'Metrópoles DF': true,
+      'Agência Brasil': true,
+      'Google News': true,
+      'PCDF Oficial': true,
+      'SSP-DF': true,
+    };
   }
 
   void _applyFilters() {
     List<NewsArticle> filtered = List.from(_articles);
 
-    // Filtro por data
     if (_startDate != null || _endDate != null) {
       filtered = filtered.where((article) {
         final articleDate = DateTime(article.date.year, article.date.month, article.date.day);
@@ -856,7 +1023,6 @@ class _HomePageState extends State<HomePage> {
       }).toList();
     }
 
-    // Filtro por fonte
     if (!_allSourcesSelected) {
       final selectedSources = _sourcesSelection.entries
           .where((entry) => entry.value)
@@ -867,7 +1033,6 @@ class _HomePageState extends State<HomePage> {
       }
     }
 
-    // Filtro de busca
     if (_searchQuery.isNotEmpty) {
       filtered = filtered.where((article) {
         return article.title.toLowerCase().contains(_searchQuery) ||
@@ -883,38 +1048,6 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _generateReport() async {
     try {
-      // Gerar conteúdo HTML simples
-      final htmlContent = '''
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Relatório PCDF Clipping</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        .header { background: #1a365d; color: white; padding: 20px; }
-        .news-item { border: 1px solid #ddd; margin: 10px 0; padding: 15px; }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>Relatório PCDF Clipping</h1>
-        <p>Data: ${DateFormat('dd/MM/yyyy HH:mm').format(DateTime.now())}</p>
-        <p>Total: ${_filteredArticles.length} notícias</p>
-    </div>
-    ${_filteredArticles.map((article) => '''
-        <div class="news-item">
-            <h3>${article.title}</h3>
-            <p><strong>Fonte:</strong> ${article.source} | 
-               <strong>Data:</strong> ${article.formattedDate} | 
-               <strong>Score:</strong> ${article.relevanceScore}</p>
-            <p>${article.content}</p>
-        </div>
-    ''').join()}
-</body>
-</html>
-''';
-
-      // Compartilhar como texto (solução universal)
       await Share.share(
         'Relatório PCDF Clipping\n\n' +
             'Data: ${DateFormat('dd/MM/yyyy HH:mm').format(DateTime.now())}\n' +
@@ -924,7 +1057,6 @@ class _HomePageState extends State<HomePage> {
             ).join('\n\n'),
         subject: 'Relatório PCDF Clipping',
       );
-
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -968,7 +1100,6 @@ class _HomePageState extends State<HomePage> {
       ),
       body: Column(
         children: [
-          // Sistema Altos
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(vertical: 10),
@@ -984,8 +1115,6 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
           ),
-
-          // Painel de Controle
           ControlPanelWidget(
             isMonitoring: _isMonitoring,
             articleCount: _filteredArticles.length,
@@ -995,8 +1124,6 @@ class _HomePageState extends State<HomePage> {
             onForceUpdate: _forceUpdate,
             onGenerateReport: _generateReport,
           ),
-
-          // Filtro de Data
           DateFilterWidget(
             startDate: _startDate,
             endDate: _endDate,
@@ -1008,8 +1135,6 @@ class _HomePageState extends State<HomePage> {
               _applyFilters();
             },
           ),
-
-          // Barra de Pesquisa
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: TextField(
@@ -1028,11 +1153,7 @@ class _HomePageState extends State<HomePage> {
               },
             ),
           ),
-
-          // Filtros de Fonte
           _buildSourcesFilter(),
-
-          // Header do Feed
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
             child: Row(
@@ -1056,8 +1177,6 @@ class _HomePageState extends State<HomePage> {
               ],
             ),
           ),
-
-          // Lista de Notícias
           Expanded(
             child: _buildNewsList(),
           ),
@@ -1141,7 +1260,7 @@ class _HomePageState extends State<HomePage> {
           children: [
             CircularProgressIndicator(),
             SizedBox(height: 16),
-            Text('Buscando notícias...'),
+            Text('Buscando notícias em tempo real...'),
           ],
         ),
       );
@@ -1266,7 +1385,7 @@ class _HomePageState extends State<HomePage> {
       _isLoading = true;
     });
 
-    _fetchNews();
+    _fetchRealNews();
   }
 
   void _stopMonitoring() {
@@ -1277,24 +1396,25 @@ class _HomePageState extends State<HomePage> {
 
   void _forceUpdate() {
     if (_isMonitoring) {
-      _fetchNews();
+      _fetchRealNews();
     }
   }
 
-  void _fetchNews() {
+  Future<void> _fetchRealNews() async {
     setState(() {
       _isLoading = true;
     });
 
-    // Simular busca com delay de rede
-    Future.delayed(const Duration(seconds: 2), () {
-      if (!mounted) return;
-
-      final newArticles = NewsSearchService.searchNews(
-        count: 15,
+    try {
+      final newArticles = await NewsSearchService.searchRealNews(
+        count: 20,
         startDate: _startDate,
         endDate: _endDate,
       );
+
+      // Adicionar notícias via scraping
+      final scrapedArticles = await NewsSearchService.scrapeNewsWebsites();
+      newArticles.addAll(scrapedArticles);
 
       setState(() {
         _articles.clear();
@@ -1303,7 +1423,17 @@ class _HomePageState extends State<HomePage> {
         _isLoading = false;
         _applyFilters();
       });
-    });
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Erro ao buscar notícias: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 }
 
