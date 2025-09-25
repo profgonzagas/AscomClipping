@@ -1,5 +1,9 @@
 # ascomclipping
+Google API Key: Obtenha em Google Cloud Console
 
+Search Engine ID: Crie um custom search engine em Programmable Search Engine
+
+Substitua as constantes no início do código com suas credenciais reais.
 A new Flutter project.
 
 ## Getting Started
